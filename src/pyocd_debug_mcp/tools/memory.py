@@ -54,15 +54,23 @@ def write_memory(address: int, value: int, size: int = 4) -> dict:
     else:
         raise ValueError(f"Unsupported write size: {size}. Use 1, 2, or 4.")
 
-    # Read back to verify
+    # Read back to verify (peripheral registers may be volatile)
     readback = read_memory(address, size)
     written_hex = f"0x{value:0{size*2}X}"
-    return {
+    is_peripheral = address >= 0x40000000
+    verified = readback["value"] == written_hex
+    result = {
         "address": f"0x{address:08X}",
         "written": written_hex,
         "readback": readback["value"],
-        "verified": readback["value"] == written_hex,
+        "verified": verified,
     }
+    if is_peripheral and not verified:
+        result["note"] = (
+            "Peripheral register: readback differs from written value. "
+            "This is normal for volatile/auto-clear registers (e.g. interrupt flags)."
+        )
+    return result
 
 
 def write_memory_block(address: int, data: list[int]) -> dict:

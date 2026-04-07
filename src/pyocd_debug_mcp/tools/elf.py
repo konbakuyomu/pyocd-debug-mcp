@@ -78,6 +78,41 @@ def list_symbols(filter_text: str = "", limit: int = 50) -> dict:
     return {"symbols": symbols, "count": len(symbols), "truncated": len(symbols) >= limit}
 
 
+def address_to_symbol(address: int) -> dict:
+    """Resolve an address to its symbol name (function or variable).
+
+    Uses pyOCD's ElfSymbolDecoder for efficient address→symbol reverse lookup.
+    Essential for interpreting PC, LR, and stack return addresses during debugging.
+
+    Args:
+        address: Memory address to resolve.
+    """
+    target = session_mgr.target
+    if target.elf is None:
+        raise RuntimeError("No ELF file attached. Use pyocd.elf.attach first.")
+
+    decoder = target.elf.symbol_decoder
+    sym_info = decoder.get_symbol_for_address(address)
+    if sym_info is None:
+        return {
+            "address": f"0x{address:08X}",
+            "resolved": False,
+            "symbol": None,
+        }
+
+    offset = address - sym_info.address
+    return {
+        "address": f"0x{address:08X}",
+        "resolved": True,
+        "symbol": sym_info.name,
+        "symbol_address": f"0x{sym_info.address:08X}",
+        "offset": offset,
+        "display": f"{sym_info.name}+0x{offset:X}" if offset else sym_info.name,
+        "size": sym_info.size,
+        "type": str(sym_info.type),
+    }
+
+
 def get_elf_info() -> dict:
     """Get information about the attached ELF file."""
     info = session_mgr.info

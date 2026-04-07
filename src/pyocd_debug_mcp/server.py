@@ -156,28 +156,96 @@ async def tool_session_status() -> str:
     name="pyocd.flash.program",
     description=(
         "Program a firmware file (.hex/.bin/.elf) to the target flash. "
-        "For armclang-compiled firmware, prefer .hex format to avoid ELF compatibility issues."
+        "For armclang-compiled firmware, prefer .hex format to avoid ELF compatibility issues. "
+        "Sends progress notifications to prevent AI client timeouts during programming."
     ),
 )
 async def tool_flash_program(
     file_path: Annotated[str, "Absolute path to firmware file (.hex, .bin, or .elf)"],
     erase: Annotated[bool, "Erase flash before programming (default True)"] = True,
+    ctx: Context = None,
 ) -> str:
+    from pathlib import Path
+    from pyocd.flash.file_programmer import FileProgrammer
+
     try:
-        return _json(flash.program(file_path, erase=erase))
+        path = Path(file_path)
+        if not path.exists():
+            return _error(f"Firmware file not found: {file_path}")
+        suffix = path.suffix.lower()
+        if suffix not in (".hex", ".bin", ".elf"):
+            return _error(f"Unsupported format: {suffix}. Use .hex, .bin, or .elf")
+
+        last_pct = [0]
+
+        def progress_cb(pct: float):
+            last_pct[0] = pct
+
+        async def _do_program():
+            programmer = FileProgrammer(
+                session_mgr.session, progress=progress_cb,
+            )
+            await asyncio.to_thread(programmer.program, str(path), erase=erase)
+
+        task = asyncio.create_task(_do_program())
+
+        # Send progress while programming
+        while not task.done():
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(
+                        progress=int(last_pct[0] * 100), total=100
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(0.2)
+
+        await task  # re-raise any exception
+
+        return _json({
+            "file": str(path), "format": suffix,
+            "erase": erase, "status": "programmed",
+        })
     except Exception as e:
         return _error(f"Flash programming failed: {e}")
 
 
 @mcp.tool(
     name="pyocd.flash.erase",
-    description="Erase the target flash memory (chip erase or sector erase).",
+    description=(
+        "Erase the target flash memory (chip erase or sector erase). "
+        "Sends progress notifications to prevent AI client timeouts."
+    ),
 )
 async def tool_flash_erase(
     chip_erase: Annotated[bool, "True for full chip erase, False for sector erase"] = True,
+    ctx: Context = None,
 ) -> str:
+    from pyocd.flash.eraser import FlashEraser
+
     try:
-        return _json(flash.erase(chip_erase=chip_erase))
+        mode = FlashEraser.Mode.CHIP if chip_erase else FlashEraser.Mode.SECTOR
+
+        async def _do_erase():
+            eraser = FlashEraser(session_mgr.session, mode)
+            await asyncio.to_thread(eraser.erase)
+
+        task = asyncio.create_task(_do_erase())
+
+        # Keep-alive progress while erasing
+        tick = 0
+        while not task.done():
+            tick += 1
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(progress=tick, total=tick + 1)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.3)
+
+        await task
+
+        return _json({"status": "erased", "mode": "chip" if chip_erase else "sector"})
     except Exception as e:
         return _error(f"Flash erase failed: {e}")
 
@@ -457,6 +525,23 @@ async def tool_elf_info() -> str:
         return _error(str(e))
 
 
+@mcp.tool(
+    name="pyocd.elf.address_to_symbol",
+    description=(
+        "Resolve a memory address to its symbol name (function or variable). "
+        "Essential for interpreting PC, LR, and stack return addresses during debugging. "
+        "Returns function name + offset (e.g. 'main+0x1A')."
+    ),
+)
+async def tool_elf_address_to_symbol(
+    address: Annotated[int, "Memory address to resolve (e.g. from PC, LR, or stack trace)"],
+) -> str:
+    try:
+        return _json(elf.address_to_symbol(address))
+    except Exception as e:
+        return _error(str(e))
+
+
 # ─── SVD tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool(
@@ -642,12 +727,12 @@ async def tool_target_wait_halt(
     import time
 
     try:
-        target = session_mgr.target
+        _target = session_mgr.target
 
         if resume_first:
-            state = await asyncio.to_thread(target.get_state)
+            state = await asyncio.to_thread(_target.get_state)
             if state == Target.State.HALTED:
-                await asyncio.to_thread(target.resume)
+                await asyncio.to_thread(_target.resume)
 
         start = time.monotonic()
         poll_interval = 0.05  # 50ms
@@ -655,11 +740,11 @@ async def tool_target_wait_halt(
         total_polls = max(1, int(timeout / poll_interval))
 
         while True:
-            state = await asyncio.to_thread(target.get_state)
+            state = await asyncio.to_thread(_target.get_state)
             if state == Target.State.HALTED:
-                pc = await asyncio.to_thread(target.read_core_register, "pc")
-                lr = await asyncio.to_thread(target.read_core_register, "lr")
-                sp = await asyncio.to_thread(target.read_core_register, "sp")
+                pc = await asyncio.to_thread(_target.read_core_register, "pc")
+                lr = await asyncio.to_thread(_target.read_core_register, "lr")
+                sp = await asyncio.to_thread(_target.read_core_register, "sp")
                 elapsed = time.monotonic() - start
 
                 result = {
@@ -673,7 +758,7 @@ async def tool_target_wait_halt(
 
                 # Identify halt reason from DFSR
                 try:
-                    dfsr = await asyncio.to_thread(target.read32, SCB_DFSR)
+                    dfsr = await asyncio.to_thread(_target.read32, SCB_DFSR)
                     if dfsr & (1 << 0):
                         result["halt_reason"] = "HALTED (debug request)"
                     elif dfsr & (1 << 1):
@@ -684,7 +769,7 @@ async def tool_target_wait_halt(
                         result["halt_reason"] = "VCATCH (vector catch)"
                     elif dfsr & (1 << 4):
                         result["halt_reason"] = "EXTERNAL"
-                    await asyncio.to_thread(target.write32, SCB_DFSR, dfsr)
+                    await asyncio.to_thread(_target.write32, SCB_DFSR, dfsr)
                 except Exception:
                     pass
 
@@ -803,7 +888,10 @@ async def tool_debug_sample_variable(
                     value = await asyncio.to_thread(read_fn, address)
 
                 elapsed = round(time.monotonic() - start_time, 3)
-                samples.append({"index": i, "time": elapsed, "value": value})
+                samples.append({
+                    "index": i, "time": elapsed,
+                    "value": value, "hex": f"0x{value:0{size*2}X}",
+                })
             except Exception as e:
                 samples.append({"index": i, "error": str(e)})
 

@@ -186,6 +186,104 @@ def _resolve_register_address(device, periph_name: str, reg_name: str) -> int:
     raise ValueError(f"Register not found: {periph_name}.{reg_name}")
 
 
+def list_fields(peripheral_name: str, register_name: str) -> dict:
+    """List all bit fields of a peripheral register.
+
+    Returns each field's name, bit range, width, and description.
+    Useful for understanding register layout before modifying individual fields.
+    """
+    device = session_mgr.svd_device
+    if device is None:
+        raise RuntimeError("No SVD file attached. Use pyocd.svd.attach first.")
+
+    fields = _get_register_fields(device, peripheral_name, register_name)
+    if not fields:
+        raise ValueError(
+            f"No fields found for {peripheral_name}.{register_name}. "
+            "Ensure SVD was loaded via cmsis-svd (not raw XML fallback)."
+        )
+
+    result_fields = []
+    for f in sorted(fields, key=lambda x: x["offset"]):
+        high = f["offset"] + f["width"] - 1
+        result_fields.append(
+            {
+                "name": f["name"],
+                "bits": f"[{high}:{f['offset']}]",
+                "width": f["width"],
+                "reset_mask": f"0x{((1 << f['width']) - 1) << f['offset']:X}",
+                "description": f.get("description", ""),
+            }
+        )
+
+    return {
+        "peripheral": peripheral_name,
+        "register": register_name,
+        "fields": result_fields,
+        "count": len(result_fields),
+    }
+
+
+def set_field(
+    peripheral_name: str, register_name: str, field_name: str, value: int
+) -> dict:
+    """Set a single bit field of a peripheral register (read-modify-write).
+
+    Reads the current register value, modifies only the specified field,
+    and writes back. This avoids accidentally clearing other fields.
+
+    Example: set_field("GPIOA", "MODER", "MODER0", 1) sets pin 0 to output.
+    """
+    device = session_mgr.svd_device
+    if device is None:
+        raise RuntimeError("No SVD file attached. Use pyocd.svd.attach first.")
+
+    target = session_mgr.target
+    addr = _resolve_register_address(device, peripheral_name, register_name)
+
+    fields = _get_register_fields(device, peripheral_name, register_name)
+    field_info = None
+    for f in fields:
+        if f["name"].upper() == field_name.upper():
+            field_info = f
+            break
+    if field_info is None:
+        available = [f["name"] for f in fields]
+        raise ValueError(
+            f"Field '{field_name}' not found in {peripheral_name}.{register_name}. "
+            f"Available: {available}"
+        )
+
+    offset = field_info["offset"]
+    width = field_info["width"]
+    max_val = (1 << width) - 1
+    if value < 0 or value > max_val:
+        raise ValueError(
+            f"Value {value} out of range for field '{field_name}' "
+            f"(width={width}, max={max_val})"
+        )
+
+    # Read-modify-write
+    old_val = target.read32(addr)
+    mask = max_val << offset
+    new_val = (old_val & ~mask) | ((value & max_val) << offset)
+    target.write32(addr, new_val)
+    readback = target.read32(addr)
+
+    return {
+        "peripheral": peripheral_name,
+        "register": register_name,
+        "field": field_name,
+        "address": f"0x{addr:08X}",
+        "old_value": f"0x{old_val:08X}",
+        "new_value": f"0x{new_val:08X}",
+        "readback": f"0x{readback:08X}",
+        "field_value": value,
+        "bits": f"[{offset + width - 1}:{offset}]",
+        "verified": readback == new_val,
+    }
+
+
 def _get_register_fields(device, periph_name: str, reg_name: str) -> list[dict]:
     """Get the bit fields of a register for decoding."""
     periph = _find_peripheral(device, periph_name)

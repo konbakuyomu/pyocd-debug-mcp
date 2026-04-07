@@ -527,6 +527,40 @@ async def tool_svd_write(
         return _error(str(e))
 
 
+@mcp.tool(
+    name="pyocd.svd.list_fields",
+    description="List all bit fields of a peripheral register, showing name, bit range, width, and description.",
+)
+async def tool_svd_list_fields(
+    peripheral: Annotated[str, "Peripheral name"],
+    register: Annotated[str, "Register name"],
+) -> str:
+    try:
+        return _json(svd.list_fields(peripheral, register))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd.svd.set_field",
+    description=(
+        "Set a single bit field of a peripheral register using read-modify-write. "
+        "Only the specified field is changed; other fields are preserved. "
+        "Example: set_field('GPIOA', 'MODER', 'MODER0', 1) sets pin 0 to output mode."
+    ),
+)
+async def tool_svd_set_field(
+    peripheral: Annotated[str, "Peripheral name"],
+    register: Annotated[str, "Register name"],
+    field: Annotated[str, "Bit field name within the register"],
+    value: Annotated[int, "Value to set (must fit within field width)"],
+) -> str:
+    try:
+        return _json(svd.set_field(peripheral, register, field, value))
+    except Exception as e:
+        return _error(str(e))
+
+
 # ─── Watchpoint tools ────────────────────────────────────────────────────────
 
 @mcp.tool(

@@ -15,7 +15,7 @@ src_dir = Path(__file__).parent.parent
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from typing import Annotated, Optional
 
 try:
@@ -25,6 +25,7 @@ try:
     from pyocd_debug_mcp.tools import flash, elf, svd
     from pyocd_debug_mcp.tools import watchpoint as wp_tools
     from pyocd_debug_mcp.tools import debug as debug_tools
+    from pyocd_debug_mcp.tools.debug import SCB_DFSR
 except ImportError:
     from .session_manager import session_mgr
     from .tools import probe, target, register, memory
@@ -32,6 +33,9 @@ except ImportError:
     from .tools import flash, elf, svd
     from .tools import watchpoint as wp_tools
     from .tools import debug as debug_tools
+    from .tools.debug import SCB_DFSR
+
+from pyocd.core.target import Target
 
 import json
 import logging
@@ -626,18 +630,97 @@ async def tool_watchpoint_list() -> str:
         "Resume target execution and wait for it to halt (breakpoint hit, watchpoint "
         "triggered, or manual halt). This is the KEY tool for 'set breakpoint → run → "
         "wait for hit → inspect' debugging workflow. Returns halt reason, PC, and "
-        "registers when the target stops."
+        "registers when the target stops. Sends progress notifications to prevent "
+        "AI client timeouts during long waits."
     ),
 )
 async def tool_target_wait_halt(
     timeout: Annotated[float, "Max seconds to wait (default 30)"] = 30.0,
     resume_first: Annotated[bool, "Resume target before waiting (default True)"] = True,
+    ctx: Context = None,
 ) -> str:
+    import time
+
     try:
-        result = await asyncio.to_thread(
-            debug_tools.wait_halt, timeout=timeout, resume_first=resume_first
-        )
-        return _json(result)
+        target = session_mgr.target
+
+        if resume_first:
+            state = await asyncio.to_thread(target.get_state)
+            if state == Target.State.HALTED:
+                await asyncio.to_thread(target.resume)
+
+        start = time.monotonic()
+        poll_interval = 0.05  # 50ms
+        iteration = 0
+        total_polls = max(1, int(timeout / poll_interval))
+
+        while True:
+            state = await asyncio.to_thread(target.get_state)
+            if state == Target.State.HALTED:
+                pc = await asyncio.to_thread(target.read_core_register, "pc")
+                lr = await asyncio.to_thread(target.read_core_register, "lr")
+                sp = await asyncio.to_thread(target.read_core_register, "sp")
+                elapsed = time.monotonic() - start
+
+                result = {
+                    "status": "halted",
+                    "reason": "breakpoint_or_halt",
+                    "elapsed_seconds": round(elapsed, 3),
+                    "pc": f"0x{pc:08X}",
+                    "lr": f"0x{lr:08X}",
+                    "sp": f"0x{sp:08X}",
+                }
+
+                # Identify halt reason from DFSR
+                try:
+                    dfsr = await asyncio.to_thread(target.read32, SCB_DFSR)
+                    if dfsr & (1 << 0):
+                        result["halt_reason"] = "HALTED (debug request)"
+                    elif dfsr & (1 << 1):
+                        result["halt_reason"] = "BKPT (breakpoint)"
+                    elif dfsr & (1 << 2):
+                        result["halt_reason"] = "DWTTRAP (watchpoint)"
+                    elif dfsr & (1 << 3):
+                        result["halt_reason"] = "VCATCH (vector catch)"
+                    elif dfsr & (1 << 4):
+                        result["halt_reason"] = "EXTERNAL"
+                    await asyncio.to_thread(target.write32, SCB_DFSR, dfsr)
+                except Exception:
+                    pass
+
+                # Resolve symbol if ELF attached
+                try:
+                    elf_file = session_mgr.target.elf
+                    if elf_file is not None:
+                        sym = elf_file.symbol_decoder.get_symbol_for_address(pc)
+                        if sym:
+                            result["symbol"] = sym.name
+                            result["symbol_address"] = f"0x{sym.address:08X}"
+                except Exception:
+                    pass
+
+                return _json(result)
+
+            elapsed = time.monotonic() - start
+            if elapsed >= timeout:
+                return _json({
+                    "status": "timeout",
+                    "elapsed_seconds": round(elapsed, 3),
+                    "target_state": str(state),
+                    "message": f"Target did not halt within {timeout}s",
+                })
+
+            # Send progress to prevent AI client timeout
+            iteration += 1
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(
+                        progress=iteration, total=total_polls
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(poll_interval)
     except Exception as e:
         return _error(str(e))
 
@@ -687,8 +770,8 @@ async def tool_debug_stack_overflow_check(
     description=(
         "Periodically sample a memory location (global variable). Reads a variable "
         "every N seconds for M samples while target is running. Returns all samples "
-        "with timestamps and statistics. Example: monitor a sensor reading every 0.5s "
-        "for 100s = 200 samples."
+        "with timestamps and statistics. Sends progress notifications to prevent "
+        "AI client timeouts during long sampling sessions."
     ),
 )
 async def tool_debug_sample_variable(
@@ -697,14 +780,64 @@ async def tool_debug_sample_variable(
     interval: Annotated[float, "Seconds between samples (default 0.5)"] = 0.5,
     count: Annotated[int, "Number of samples (default 200)"] = 200,
     halt_on_read: Annotated[bool, "Halt target for each read (safer but slower)"] = False,
+    ctx: Context = None,
 ) -> str:
+    import time
+
     try:
-        result = await asyncio.to_thread(
-            debug_tools.sample_variable,
-            address=address, size=size, interval=interval,
-            count=count, halt_on_read=halt_on_read,
-        )
-        return _json(result)
+        _target = session_mgr.target
+        read_fn = {1: _target.read8, 2: _target.read16, 4: _target.read32}.get(size)
+        if read_fn is None:
+            return _error(f"Unsupported size: {size}. Use 1, 2, or 4.")
+
+        samples = []
+        start_time = time.monotonic()
+
+        for i in range(count):
+            try:
+                if halt_on_read:
+                    await asyncio.to_thread(_target.halt)
+                    value = await asyncio.to_thread(read_fn, address)
+                    await asyncio.to_thread(_target.resume)
+                else:
+                    value = await asyncio.to_thread(read_fn, address)
+
+                elapsed = round(time.monotonic() - start_time, 3)
+                samples.append({"index": i, "time": elapsed, "value": value})
+            except Exception as e:
+                samples.append({"index": i, "error": str(e)})
+
+            # Send progress to prevent AI client timeout
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(progress=i + 1, total=count)
+                except Exception:
+                    pass
+
+            if i < count - 1:
+                await asyncio.sleep(interval)
+
+        total_time = round(time.monotonic() - start_time, 3)
+        values = [s["value"] for s in samples if "value" in s]
+        stats = {}
+        if values:
+            stats = {
+                "min": min(values),
+                "max": max(values),
+                "first": values[0],
+                "last": values[-1],
+                "unique_values": len(set(values)),
+                "changes": sum(1 for a, b in zip(values, values[1:]) if a != b),
+            }
+
+        return _json({
+            "address": f"0x{address:08X}",
+            "size": size,
+            "samples": samples,
+            "sample_count": len(samples),
+            "total_time": total_time,
+            "statistics": stats,
+        })
     except Exception as e:
         return _error(str(e))
 

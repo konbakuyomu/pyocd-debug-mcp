@@ -214,14 +214,32 @@ def _read_exception_stack_frame(target, lr: int) -> Optional[dict]:
         }
 
         # PC is the instruction that caused the fault
-        frame["fault_instruction_address"] = f"0x{frame_data[6]:08X}"
+        pc_fault = frame_data[6]
+        frame["fault_instruction_address"] = f"0x{pc_fault:08X}"
 
         # LR_saved tells us the caller
         saved_lr = frame_data[5]
+        lr_addr = saved_lr & ~1  # Clear Thumb bit
         if saved_lr & 1:
-            frame["caller_address"] = f"0x{(saved_lr & ~1):08X}"
+            frame["caller_address"] = f"0x{lr_addr:08X}"
         else:
             frame["caller_address"] = f"0x{saved_lr:08X}"
+
+        # Resolve PC and LR to function names via ELF symbol decoder
+        try:
+            elf_file = target.elf
+            if elf_file is not None:
+                decoder = elf_file.symbol_decoder
+                pc_sym = decoder.get_symbol_for_address(pc_fault)
+                if pc_sym:
+                    frame["fault_function"] = pc_sym.name
+                    frame["fault_offset"] = f"+0x{pc_fault - pc_sym.address:X}"
+                lr_sym = decoder.get_symbol_for_address(lr_addr)
+                if lr_sym:
+                    frame["caller_function"] = lr_sym.name
+                    frame["caller_offset"] = f"+0x{lr_addr - lr_sym.address:X}"
+        except Exception:
+            pass
 
         return frame
     except Exception as e:

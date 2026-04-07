@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyocd-debug-mcp"
+version = "0.1.0"
+description = "MCP server for AI-driven embedded MCU debugging via pyOCD (CMSIS-DAP)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["mcp", "pyocd", "embedded", "debugging", "cortex-m", "cmsis-dap"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Embedded Systems",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "pyocd>=0.36",
+    "fastmcp>=2.3.0",
+    "mcp[cli]>=1.21.0",
+    "pyelftools>=0.29",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+svd = [
+    "cmsis-svd>=0.4",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+pyocd-debug-mcp = "pyocd_debug_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/konbakuyomu/pyocd-debug-mcp"
+Repository = "https://github.com/konbakuyomu/pyocd-debug-mcp"
+Issues = "https://github.com/konbakuyomu/pyocd-debug-mcp/issues"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -27,6 +27,7 @@ try:
     from pyocd_debug_mcp.tools import debug as debug_tools
     from pyocd_debug_mcp.tools.debug import SCB_DFSR
     from pyocd_debug_mcp.tools import rtt as rtt_tools
+    from pyocd_debug_mcp.tools import project as project_tools
 except ImportError:
     from .session_manager import session_mgr
     from .tools import probe, target, register, memory
@@ -36,6 +37,7 @@ except ImportError:
     from .tools import debug as debug_tools
     from .tools.debug import SCB_DFSR
     from .tools import rtt as rtt_tools
+    from .tools import project as project_tools
 
 from pyocd.core.target import Target
 
@@ -1417,6 +1419,52 @@ async def tool_rtt_write(
 async def tool_rtt_status() -> str:
     try:
         return _json(rtt_tools.status())
+    except Exception as e:
+        return _error(str(e))
+
+
+# ─── Project Config Tools ────────────────────────────────────────────────────
+
+
+@mcp.tool(
+    name="pyocd_project_load",
+    description=(
+        "Load project debug configuration from .pyocd-debug.json, "
+        "or auto-discover firmware/ELF/SVD files if no config exists. "
+        "Call this FIRST before any debug session to get file paths. "
+        "Returns target type, firmware path, ELF path, SVD path, and probe ID."
+    ),
+)
+async def pyocd_project_load(
+    project_dir: Annotated[str, "Absolute path to the project root directory"],
+) -> str:
+    try:
+        return _json(project_tools.load_project(project_dir))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_project_init",
+    description=(
+        "Create .pyocd-debug.json config file in a project directory. "
+        "Stores target type, firmware, ELF, SVD, and probe paths "
+        "so that debug sessions can be started reliably without manual file discovery. "
+        "Paths under the project directory are automatically converted to relative paths."
+    ),
+)
+async def pyocd_project_init(
+    project_dir: Annotated[str, "Absolute path to the project root directory"],
+    target: Annotated[str, "Target MCU type (e.g. 'hc32f4a0xi', 'stm32f407xe')"],
+    firmware: Annotated[Optional[str], "Path to firmware file (.hex/.bin)"] = None,
+    elf: Annotated[Optional[str], "Path to ELF/AXF file for symbol resolution"] = None,
+    svd: Annotated[Optional[str], "Path to SVD file for peripheral register access"] = None,
+    probe: Annotated[Optional[str], "Probe unique ID (partial match supported)"] = None,
+) -> str:
+    try:
+        return _json(project_tools.init_project(
+            project_dir, target, firmware, elf, svd, probe
+        ))
     except Exception as e:
         return _error(str(e))
 

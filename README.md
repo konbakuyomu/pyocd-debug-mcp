@@ -2,7 +2,7 @@
 
 > **让 AI 全自动进行嵌入式单片机仿真调试的 MCP Server**
 
-通过 [pyOCD](https://pyocd.io/) + CMSIS-DAP 探针，为 Claude / GitHub Copilot 等 AI 工具提供 **55 个调试工具**，涵盖从连接探针、烧录固件、打断点、读寄存器到 HardFault 故障分析的完整调试流程。
+通过 [pyOCD](https://pyocd.io/) + CMSIS-DAP 探针，为 Claude / GitHub Copilot 等 AI 工具提供 **57 个调试工具**，涵盖从连接探针、烧录固件、打断点、读寄存器到 HardFault 故障分析的完整调试流程。
 
 ## ✨ 核心能力
 
@@ -108,7 +108,14 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 
 > 💡 将 `/path/to/pyocd-debug-mcp` 替换为你的实际路径。Windows 下使用 `\\` 或 `/` 均可。
 
-## 🛠️ 工具列表（55 个）
+## 🛠️ 工具列表（57 个）
+
+### 项目配置
+
+| 工具名 | 说明 |
+|--------|------|
+| `pyocd_project_load` | 🆕 加载项目配置（`.pyocd-debug.json`），或自动发现固件/ELF/SVD 文件 |
+| `pyocd_project_init` | 🆕 创建 `.pyocd-debug.json` 配置文件（路径自动转相对路径） |
 
 ### 探针 & 会话
 
@@ -209,6 +216,32 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 | `pyocd_rtt_read` | 🆕 从 RTT 上行通道读取数据（非阻塞） |
 | `pyocd_rtt_write` | 🆕 向 RTT 下行通道写入数据 |
 | `pyocd_rtt_status` | 🆕 查看 RTT 状态和通道信息 |
+
+## 📋 项目配置（推荐）
+
+在项目根目录创建 `.pyocd-debug.json`，AI 即可自动获取所有调试文件路径：
+
+```json
+{
+  "target": "hc32f4a0xi",
+  "firmware": "build/usart_uart_dma_Debug/usart_uart_dma.hex",
+  "elf": "build/usart_uart_dma_Debug/usart_uart_dma.axf",
+  "svd": "HC32F4A0PIHB.svd"
+}
+```
+
+也可让 AI 自动创建：
+
+```
+AI: pyocd_project_load("/path/to/project")    → 自动扫描发现文件
+AI: pyocd_project_init("/path/to/project",    → 创建配置
+      target="hc32f4a0xi",
+      firmware="build/xxx.hex",
+      elf="build/xxx.axf",
+      svd="HC32F4A0PIHB.svd")
+```
+
+> 💡 配置中的路径会自动转为项目根目录的相对路径，方便版本控制。
 
 ## 🚀 典型调试流程
 
@@ -331,7 +364,7 @@ AI: pyocd_target_step_out(timeout=5.0)
 pyocd-debug-mcp/
 ├── pyproject.toml              # 项目配置和依赖
 ├── src/pyocd_debug_mcp/
-│   ├── server.py               # MCP Server 入口，55 个工具注册
+│   ├── server.py               # MCP Server 入口，57 个工具注册
 │   ├── session_manager.py      # 会话生命周期管理（单例）
 │   └── tools/
 │       ├── probe.py            # 探针发现
@@ -344,7 +377,8 @@ pyocd-debug-mcp/
 │       ├── elf.py              # ELF 符号解析
 │       ├── svd.py              # SVD 外设寄存器（含批量更新、枚举、描述）
 │       ├── rtt.py              # RTT 实时传输（SEGGER RTT 通道读写）
-│       └── debug.py            # 高级调试（故障分析、栈回溯、栈检查、采样）
+│       ├── debug.py            # 高级调试（故障分析、栈回溯、栈检查、采样）
+│       └── project.py          # 项目配置（.pyocd-debug.json 管理）
 └── tests/
 ```
 

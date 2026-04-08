@@ -1469,6 +1469,53 @@ async def pyocd_project_init(
         return _error(str(e))
 
 
+@mcp.tool(
+    name="pyocd_svd_attach_builtin",
+    description=(
+        "Attach a built-in SVD from pyocd's bundled svd_data.zip as a TEMPORARY fallback. "
+        "⚠️ Built-in SVDs are generic/simplified versions that may lack peripheral definitions "
+        "specific to your exact chip variant/package. STRONGLY RECOMMENDED: use a vendor-provided "
+        "SVD file via pyocd_svd_attach() instead. Only use this as a last resort when no "
+        "vendor SVD is available. Extracts the SVD to a temp directory and attaches it."
+    ),
+)
+async def pyocd_svd_attach_builtin(
+    svd_name: Annotated[str, "Built-in SVD filename (e.g. 'HC32F4A0.svd', 'STM32F429x.svd'). Use pyocd_project_load to discover available names."],
+    target_type: Annotated[Optional[str], "Target type to auto-match SVD name (alternative to svd_name)"] = None,
+) -> str:
+    try:
+        import tempfile
+
+        # If target_type given but no svd_name, try to find matching builtin
+        if target_type and not svd_name:
+            fallback = project_tools.find_builtin_svd(target_type)
+            if not fallback or not fallback.get("svd_builtin_names"):
+                return _error(f"No built-in SVD found for target '{target_type}'")
+            svd_name = fallback["svd_builtin_names"][0]
+
+        # Extract to temp dir
+        tmp_dir = tempfile.mkdtemp(prefix="pyocd_svd_")
+        extracted = project_tools.extract_builtin_svd(svd_name, tmp_dir)
+        if not extracted:
+            return _error(
+                f"Failed to extract '{svd_name}' from pyocd built-in SVD. "
+                f"Available built-in SVDs: {len(project_tools._list_builtin_svd())} files. "
+                f"Use pyocd_project_load() to see matching candidates."
+            )
+
+        # Attach it
+        result = svd.attach(extracted)
+        result["_source"] = "pyocd_builtin"
+        result["_extracted_to"] = extracted
+        result["_warning"] = (
+            "⚠️ 正在使用 pyocd 内置通用 SVD，可能不完整。"
+            "强烈建议从芯片厂商 SDK 获取完整 SVD 文件并配置到 .pyocd-debug.json 中。"
+        )
+        return _json(result)
+    except Exception as e:
+        return _error(str(e))
+
+
 # ─── Main entry point ────────────────────────────────────────────────────────
 
 def main():

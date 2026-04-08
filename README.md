@@ -2,7 +2,7 @@
 
 > **让 AI 全自动进行嵌入式单片机仿真调试的 MCP Server**
 
-通过 [pyOCD](https://pyocd.io/) + CMSIS-DAP 探针，为 Claude / GitHub Copilot 等 AI 工具提供 **57 个调试工具**，涵盖从连接探针、烧录固件、打断点、读寄存器到 HardFault 故障分析的完整调试流程。
+通过 [pyOCD](https://pyocd.io/) + CMSIS-DAP 探针，为 Claude / GitHub Copilot 等 AI 工具提供 **58 个调试工具**，涵盖从连接探针、烧录固件、打断点、读寄存器到 HardFault 故障分析的完整调试流程。
 
 ## ✨ 核心能力
 
@@ -108,7 +108,7 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 
 > 💡 将 `/path/to/pyocd-debug-mcp` 替换为你的实际路径。Windows 下使用 `\\` 或 `/` 均可。
 
-## 🛠️ 工具列表（57 个）
+## 🛠️ 工具列表（58 个）
 
 ### 项目配置
 
@@ -116,6 +116,7 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 |--------|------|
 | `pyocd_project_load` | 🆕 加载项目配置（`.pyocd-debug.json`），或自动发现固件/ELF/SVD 文件 |
 | `pyocd_project_init` | 🆕 创建 `.pyocd-debug.json` 配置文件（路径自动转相对路径） |
+| `pyocd_svd_attach_builtin` | 🆕 ⚠️ 从 pyocd 内置 SVD 临时回退（强烈建议改用厂商提供的完整 SVD） |
 
 ### 探针 & 会话
 
@@ -243,6 +244,16 @@ AI: pyocd_project_init("/path/to/project",    → 创建配置
 
 > 💡 配置中的路径会自动转为项目根目录的相对路径，方便版本控制。
 
+### SVD 文件查找策略
+
+SVD 文件（外设寄存器描述）的查找遵循三级优先级：
+
+1. **配置文件指定**（最佳）：`.pyocd-debug.json` 中的 `svd` 字段 — 厂商提供的完整 SVD
+2. **项目目录扫描**：自动在项目目录中递归查找 `.svd` / `.xml` 文件
+3. **pyocd 内置回退**（最后手段）：`pyocd_svd_attach_builtin` — 从 pyocd 内置的 105 个通用 SVD 中匹配
+
+> ⚠️ **强烈建议** 从芯片厂商 SDK 获取与具体芯片型号匹配的 SVD 文件。内置 SVD 是通用简化版，可能缺少部分外设或引脚定义。
+
 ## 🚀 典型调试流程
 
 以下是 AI 使用此 MCP Server 进行调试的典型对话流程：
@@ -364,7 +375,7 @@ AI: pyocd_target_step_out(timeout=5.0)
 pyocd-debug-mcp/
 ├── pyproject.toml              # 项目配置和依赖
 ├── src/pyocd_debug_mcp/
-│   ├── server.py               # MCP Server 入口，57 个工具注册
+│   ├── server.py               # MCP Server 入口，58 个工具注册
 │   ├── session_manager.py      # 会话生命周期管理（单例）
 │   └── tools/
 │       ├── probe.py            # 探针发现

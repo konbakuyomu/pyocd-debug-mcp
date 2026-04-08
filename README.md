@@ -108,85 +108,85 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.probe.list` | 列出所有已连接的 CMSIS-DAP 调试探针 |
-| `pyocd.probe.info` | 获取指定探针详细信息 |
-| `pyocd.session.connect` | 连接探针并打开调试会话 |
-| `pyocd.session.disconnect` | 断开调试会话，释放探针 |
-| `pyocd.session.status` | 查看当前会话状态 |
+| `pyocd_probe_list` | 列出所有已连接的 CMSIS-DAP 调试探针 |
+| `pyocd_probe_info` | 获取指定探针详细信息 |
+| `pyocd_session_connect` | 连接探针并打开调试会话 |
+| `pyocd_session_disconnect` | 断开调试会话，释放探针 |
+| `pyocd_session_status` | 查看当前会话状态 |
 
 ### 烧录
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.flash.program` | 烧录固件（.hex / .bin / .elf） |
-| `pyocd.flash.erase` | 擦除 Flash |
+| `pyocd_flash_program` | 烧录固件（.hex / .bin / .elf） |
+| `pyocd_flash_erase` | 擦除 Flash |
 
 ### 目标控制
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.target.halt` | 暂停 CPU |
-| `pyocd.target.resume` | 恢复运行 |
-| `pyocd.target.step` | 单步执行 |
-| `pyocd.target.reset` | 复位 MCU |
-| `pyocd.target.status` | 获取目标状态（运行/停止）及关键寄存器 |
-| `pyocd.target.wait_halt` | ⏳ **等待目标停止**（断点命中/监视点触发） |
-| `pyocd.target.list_supported` | 列出 pyOCD 支持的所有 MCU（206+） |
+| `pyocd_target_halt` | 暂停 CPU |
+| `pyocd_target_resume` | 恢复运行 |
+| `pyocd_target_step` | 单步执行 |
+| `pyocd_target_reset` | 复位 MCU |
+| `pyocd_target_status` | 获取目标状态（运行/停止）及关键寄存器 |
+| `pyocd_target_wait_halt` | ⏳ **等待目标停止**（断点命中/监视点触发） |
+| `pyocd_target_list_supported` | 列出 pyOCD 支持的所有 MCU（206+） |
 
 ### 寄存器 & 内存
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.register.read` | 读取 CPU 寄存器 |
-| `pyocd.register.write` | 写入 CPU 寄存器 |
-| `pyocd.register.read_all` | 读取全部寄存器（含 FPU） |
-| `pyocd.memory.read` | 读内存 |
-| `pyocd.memory.write` | 写内存（带 readback 验证） |
-| `pyocd.memory.write_block` | 块写入 |
-| `pyocd.memory.dump` | Hex dump 格式输出 |
+| `pyocd_register_read` | 读取 CPU 寄存器 |
+| `pyocd_register_write` | 写入 CPU 寄存器 |
+| `pyocd_register_read_all` | 读取全部寄存器（含 FPU） |
+| `pyocd_memory_read` | 读内存 |
+| `pyocd_memory_write` | 写内存（带 readback 验证） |
+| `pyocd_memory_write_block` | 块写入 |
+| `pyocd_memory_dump` | Hex dump 格式输出 |
 
 ### 断点 & 监视点
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.breakpoint.set` | 设置硬件断点（地址或符号名） |
-| `pyocd.breakpoint.clear` | 清除断点 |
-| `pyocd.breakpoint.clear_all` | 清除所有断点 |
-| `pyocd.breakpoint.list` | 列出当前断点 |
-| `pyocd.watchpoint.set` | 设置数据监视点（读/写/读写触发） |
-| `pyocd.watchpoint.clear` | 清除监视点 |
-| `pyocd.watchpoint.clear_all` | 清除所有监视点 |
-| `pyocd.watchpoint.list` | 列出当前监视点 |
+| `pyocd_breakpoint_set` | 设置硬件断点（地址或符号名） |
+| `pyocd_breakpoint_clear` | 清除断点 |
+| `pyocd_breakpoint_clear_all` | 清除所有断点 |
+| `pyocd_breakpoint_list` | 列出当前断点 |
+| `pyocd_watchpoint_set` | 设置数据监视点（读/写/读写触发） |
+| `pyocd_watchpoint_clear` | 清除监视点 |
+| `pyocd_watchpoint_clear_all` | 清除所有监视点 |
+| `pyocd_watchpoint_list` | 列出当前监视点 |
 
 ### ELF 符号
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.elf.attach` | 加载 ELF 文件用于符号解析 |
-| `pyocd.elf.lookup` | 按名称查找符号地址 |
-| `pyocd.elf.symbols` | 列出 ELF 中的符号（函数/变量） |
-| `pyocd.elf.info` | 获取 ELF 文件信息 |
-| `pyocd.elf.address_to_symbol` | 地址→符号反查（PC/LR→函数名+偏移） |
+| `pyocd_elf_attach` | 加载 ELF 文件用于符号解析 |
+| `pyocd_elf_lookup` | 按名称查找符号地址 |
+| `pyocd_elf_symbols` | 列出 ELF 中的符号（函数/变量） |
+| `pyocd_elf_info` | 获取 ELF 文件信息 |
+| `pyocd_elf_address_to_symbol` | 地址→符号反查（PC/LR→函数名+偏移） |
 
 ### SVD 外设寄存器
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.svd.attach` | 加载 SVD 文件 |
-| `pyocd.svd.list_peripherals` | 列出所有外设 |
-| `pyocd.svd.list_registers` | 列出外设的寄存器 |
-| `pyocd.svd.read` | 按名称读外设寄存器（含位域解析） |
-| `pyocd.svd.write` | 按名称写外设寄存器 |
-| `pyocd.svd.list_fields` | 列出寄存器的所有位域（名称、位范围、宽度） |
-| `pyocd.svd.set_field` | 设置单个位域值（read-modify-write，不影响其他位域） |
+| `pyocd_svd_attach` | 加载 SVD 文件 |
+| `pyocd_svd_list_peripherals` | 列出所有外设 |
+| `pyocd_svd_list_registers` | 列出外设的寄存器 |
+| `pyocd_svd_read` | 按名称读外设寄存器（含位域解析） |
+| `pyocd_svd_write` | 按名称写外设寄存器 |
+| `pyocd_svd_list_fields` | 列出寄存器的所有位域（名称、位范围、宽度） |
+| `pyocd_svd_set_field` | 设置单个位域值（read-modify-write，不影响其他位域） |
 
 ### 高级调试
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd.debug.fault_analyze` | 💥 分析 HardFault 崩溃（SCB 寄存器 + 异常栈帧 + EXC_RETURN） |
-| `pyocd.debug.stack_overflow_check` | 📏 检查线程栈溢出（RT-Thread / FreeRTOS） |
-| `pyocd.debug.sample_variable` | 📊 周期性采样变量（如每 0.5s 采样 200 次） |
+| `pyocd_debug_fault_analyze` | 💥 分析 HardFault 崩溃（SCB 寄存器 + 异常栈帧 + EXC_RETURN） |
+| `pyocd_debug_stack_overflow_check` | 📏 检查线程栈溢出（RT-Thread / FreeRTOS） |
+| `pyocd_debug_sample_variable` | 📊 周期性采样变量（如每 0.5s 采样 200 次） |
 
 ## 🚀 典型调试流程
 
@@ -195,29 +195,29 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 ### 1. 连接 → 烧录 → 运行到 main
 
 ```
-AI: pyocd.probe.list                           → 发现探针
-AI: pyocd.session.connect("hc32f460xe")        → 连接
-AI: pyocd.flash.program("firmware.hex")        → 烧录
-AI: pyocd.elf.attach("firmware.elf")           → 加载符号
-AI: pyocd.breakpoint.set(symbol="main")        → 在 main 打断点
-AI: pyocd.target.reset(halt=true)              → 复位并停止
-AI: pyocd.target.wait_halt(timeout=10)         → 等待命中 main
+AI: pyocd_probe_list                           → 发现探针
+AI: pyocd_session_connect("hc32f460xe")        → 连接
+AI: pyocd_flash_program("firmware.hex")        → 烧录
+AI: pyocd_elf_attach("firmware.elf")           → 加载符号
+AI: pyocd_breakpoint_set(symbol="main")        → 在 main 打断点
+AI: pyocd_target_reset(halt=true)              → 复位并停止
+AI: pyocd_target_wait_halt(timeout=10)         → 等待命中 main
 ```
 
 ### 2. 串口数据调试（等待断点）
 
 ```
-AI: pyocd.breakpoint.set(symbol="UART_RxCallback")
-AI: pyocd.target.wait_halt(timeout=60)         ← 等待数据到来
+AI: pyocd_breakpoint_set(symbol="UART_RxCallback")
+AI: pyocd_target_wait_halt(timeout=60)         ← 等待数据到来
     ... 60s 内数据到达，断点命中 ...
-AI: pyocd.memory.dump(rx_buffer_addr, 64)      → 查看接收缓冲区
-AI: pyocd.register.read_all()                  → 查看寄存器现场
+AI: pyocd_memory_dump(rx_buffer_addr, 64)      → 查看接收缓冲区
+AI: pyocd_register_read_all()                  → 查看寄存器现场
 ```
 
 ### 3. 周期性变量监控
 
 ```
-AI: pyocd.debug.sample_variable(
+AI: pyocd_debug_sample_variable(
       address=0x20001000,   # 全局变量地址
       interval=0.5,          # 每 0.5s
       count=200              # 共 200 次 = 100s
@@ -228,7 +228,7 @@ AI: pyocd.debug.sample_variable(
 ### 4. HardFault 崩溃分析
 
 ```
-AI: pyocd.debug.fault_analyze()
+AI: pyocd_debug_fault_analyze()
 → 返回:
   - fault_type: "BusFault"
   - fault_address: "0x40012400"
@@ -240,14 +240,14 @@ AI: pyocd.debug.fault_analyze()
 ### 5. 野指针/数组越界追踪
 
 ```
-AI: pyocd.watchpoint.set(
+AI: pyocd_watchpoint_set(
       address=0x20002000,    # 数组末尾地址
       size=4,
       access_type="write"    # 监控越界写入
     )
-AI: pyocd.target.wait_halt(timeout=30)
+AI: pyocd_target_wait_halt(timeout=30)
     ... 越界写入发生，DWT 触发停止 ...
-AI: pyocd.target.status()                      → 查看 PC 定位到写入指令
+AI: pyocd_target_status()                      → 查看 PC 定位到写入指令
 ```
 
 ## 🏗️ 项目结构
@@ -280,7 +280,7 @@ pyocd-debug-mcp/
   - **STMicroelectronics**: STM32F0/F1/F2/F3/F4/F7/H7/L0/L4/G0/G4 等
   - **Nordic**: nRF52832、nRF52840、nRF9160 等
   - **NXP**: LPC、Kinetis、i.MX RT 等
-  - 更多: `pyocd.target.list_supported` 查看完整列表
+  - 更多: `pyocd_target_list_supported` 查看完整列表
 
 ## 📄 License
 

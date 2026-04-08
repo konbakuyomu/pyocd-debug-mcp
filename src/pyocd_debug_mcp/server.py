@@ -58,7 +58,7 @@ def _error(msg: str) -> str:
 # ─── Probe tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.probe.list",
+    name="pyocd_probe_list",
     description="List all connected CMSIS-DAP debug probes. Call this first to discover available probes.",
 )
 async def tool_probe_list() -> str:
@@ -70,7 +70,7 @@ async def tool_probe_list() -> str:
 
 
 @mcp.tool(
-    name="pyocd.probe.info",
+    name="pyocd_probe_info",
     description="Get detailed information about a specific debug probe.",
 )
 async def tool_probe_info(
@@ -85,7 +85,7 @@ async def tool_probe_info(
 # ─── Session tools ───────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.session.connect",
+    name="pyocd_session_connect",
     description=(
         "Connect to a debug probe and open a debug session. "
         "Must be called before any target/register/memory operations. "
@@ -114,7 +114,7 @@ async def tool_session_connect(
 
 
 @mcp.tool(
-    name="pyocd.session.disconnect",
+    name="pyocd_session_disconnect",
     description="Close the current debug session and release the probe.",
 )
 async def tool_session_disconnect() -> str:
@@ -126,7 +126,7 @@ async def tool_session_disconnect() -> str:
 
 
 @mcp.tool(
-    name="pyocd.session.status",
+    name="pyocd_session_status",
     description="Check if a debug session is active and get connection info.",
 )
 async def tool_session_status() -> str:
@@ -153,7 +153,7 @@ async def tool_session_status() -> str:
 # ─── Flash tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.flash.program",
+    name="pyocd_flash_program",
     description=(
         "Program a firmware file (.hex/.bin/.elf) to the target flash. "
         "For armclang-compiled firmware, prefer .hex format to avoid ELF compatibility issues. "
@@ -211,7 +211,7 @@ async def tool_flash_program(
 
 
 @mcp.tool(
-    name="pyocd.flash.erase",
+    name="pyocd_flash_erase",
     description=(
         "Erase the target flash memory (chip erase or sector erase). "
         "Sends progress notifications to prevent AI client timeouts."
@@ -253,7 +253,7 @@ async def tool_flash_erase(
 # ─── Target control tools ────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.target.halt",
+    name="pyocd_target_halt",
     description="Halt (pause) the target CPU immediately. Returns current PC.",
 )
 async def tool_target_halt() -> str:
@@ -264,7 +264,7 @@ async def tool_target_halt() -> str:
 
 
 @mcp.tool(
-    name="pyocd.target.step",
+    name="pyocd_target_step",
     description="Single-step the target CPU. Target must be halted first.",
 )
 async def tool_target_step(
@@ -277,7 +277,7 @@ async def tool_target_step(
 
 
 @mcp.tool(
-    name="pyocd.target.resume",
+    name="pyocd_target_resume",
     description="Resume target execution (run until next breakpoint or halt).",
 )
 async def tool_target_resume() -> str:
@@ -288,7 +288,7 @@ async def tool_target_resume() -> str:
 
 
 @mcp.tool(
-    name="pyocd.target.reset",
+    name="pyocd_target_reset",
     description="Reset the target MCU. By default resets and halts at the entry point.",
 )
 async def tool_target_reset(
@@ -301,7 +301,7 @@ async def tool_target_reset(
 
 
 @mcp.tool(
-    name="pyocd.target.status",
+    name="pyocd_target_status",
     description="Get current target state (halted/running) and key registers if halted.",
 )
 async def tool_target_status() -> str:
@@ -314,7 +314,7 @@ async def tool_target_status() -> str:
 # ─── Register tools ──────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.register.read",
+    name="pyocd_register_read",
     description="Read a CPU core register by name (e.g. 'pc', 'sp', 'r0', 'xpsr').",
 )
 async def tool_register_read(
@@ -327,7 +327,7 @@ async def tool_register_read(
 
 
 @mcp.tool(
-    name="pyocd.register.write",
+    name="pyocd_register_write",
     description="Write a value to a CPU core register.",
 )
 async def tool_register_write(
@@ -341,7 +341,7 @@ async def tool_register_write(
 
 
 @mcp.tool(
-    name="pyocd.register.read_all",
+    name="pyocd_register_read_all",
     description="Read all CPU core registers at once. Useful for getting full CPU state.",
 )
 async def tool_register_read_all(
@@ -356,7 +356,7 @@ async def tool_register_read_all(
 # ─── Memory tools ────────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.memory.read",
+    name="pyocd_memory_read",
     description="Read memory at a given address. Returns hex value.",
 )
 async def tool_memory_read(
@@ -370,7 +370,7 @@ async def tool_memory_read(
 
 
 @mcp.tool(
-    name="pyocd.memory.write",
+    name="pyocd_memory_write",
     description="Write a value to memory at a given address.",
 )
 async def tool_memory_write(
@@ -385,7 +385,7 @@ async def tool_memory_write(
 
 
 @mcp.tool(
-    name="pyocd.memory.write_block",
+    name="pyocd_memory_write_block",
     description="Write a block of bytes to memory.",
 )
 async def tool_memory_write_block(
@@ -399,7 +399,7 @@ async def tool_memory_write_block(
 
 
 @mcp.tool(
-    name="pyocd.memory.dump",
+    name="pyocd_memory_dump",
     description="Dump memory in hex dump format (address, hex bytes, ASCII). Useful for inspecting data structures.",
 )
 async def tool_memory_dump(
@@ -415,7 +415,7 @@ async def tool_memory_dump(
 # ─── Breakpoint tools ────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.breakpoint.set",
+    name="pyocd_breakpoint_set",
     description="Set a hardware breakpoint at an address or symbol name (requires ELF).",
 )
 async def tool_breakpoint_set(
@@ -431,7 +431,7 @@ async def tool_breakpoint_set(
 
 
 @mcp.tool(
-    name="pyocd.breakpoint.clear",
+    name="pyocd_breakpoint_clear",
     description="Remove a breakpoint at an address or symbol.",
 )
 async def tool_breakpoint_clear(
@@ -447,7 +447,7 @@ async def tool_breakpoint_clear(
 
 
 @mcp.tool(
-    name="pyocd.breakpoint.clear_all",
+    name="pyocd_breakpoint_clear_all",
     description="Remove all active breakpoints.",
 )
 async def tool_breakpoint_clear_all() -> str:
@@ -458,7 +458,7 @@ async def tool_breakpoint_clear_all() -> str:
 
 
 @mcp.tool(
-    name="pyocd.breakpoint.list",
+    name="pyocd_breakpoint_list",
     description="List all active breakpoints.",
 )
 async def tool_breakpoint_list() -> str:
@@ -471,7 +471,7 @@ async def tool_breakpoint_list() -> str:
 # ─── ELF tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.elf.attach",
+    name="pyocd_elf_attach",
     description=(
         "Attach an ELF file for symbol resolution. "
         "Enables using function names for breakpoints and provides richer debug info. "
@@ -488,7 +488,7 @@ async def tool_elf_attach(
 
 
 @mcp.tool(
-    name="pyocd.elf.symbols",
+    name="pyocd_elf_symbols",
     description="List symbols (functions/variables) from the attached ELF file.",
 )
 async def tool_elf_symbols(
@@ -502,7 +502,7 @@ async def tool_elf_symbols(
 
 
 @mcp.tool(
-    name="pyocd.elf.lookup",
+    name="pyocd_elf_lookup",
     description="Look up a symbol's address by name.",
 )
 async def tool_elf_lookup(
@@ -515,7 +515,7 @@ async def tool_elf_lookup(
 
 
 @mcp.tool(
-    name="pyocd.elf.info",
+    name="pyocd_elf_info",
     description="Get information about the attached ELF file (arch, entry point, sections).",
 )
 async def tool_elf_info() -> str:
@@ -526,7 +526,7 @@ async def tool_elf_info() -> str:
 
 
 @mcp.tool(
-    name="pyocd.elf.address_to_symbol",
+    name="pyocd_elf_address_to_symbol",
     description=(
         "Resolve a memory address to its symbol name (function or variable). "
         "Essential for interpreting PC, LR, and stack return addresses during debugging. "
@@ -545,7 +545,7 @@ async def tool_elf_address_to_symbol(
 # ─── SVD tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.svd.attach",
+    name="pyocd_svd_attach",
     description=(
         "Attach an SVD file for peripheral register access. "
         "SVD files describe the register layout of MCU peripherals (GPIO, UART, SPI, etc)."
@@ -561,7 +561,7 @@ async def tool_svd_attach(
 
 
 @mcp.tool(
-    name="pyocd.svd.list_peripherals",
+    name="pyocd_svd_list_peripherals",
     description="List all peripherals defined in the attached SVD file.",
 )
 async def tool_svd_list_peripherals() -> str:
@@ -572,7 +572,7 @@ async def tool_svd_list_peripherals() -> str:
 
 
 @mcp.tool(
-    name="pyocd.svd.list_registers",
+    name="pyocd_svd_list_registers",
     description="List all registers of a specific peripheral.",
 )
 async def tool_svd_list_registers(
@@ -585,7 +585,7 @@ async def tool_svd_list_registers(
 
 
 @mcp.tool(
-    name="pyocd.svd.read",
+    name="pyocd_svd_read",
     description=(
         "Read a peripheral register by name. Returns value with bit-field decoding. "
         "Example: pyocd.svd.read('GPIOA', 'IDR') to read GPIO input data register."
@@ -602,7 +602,7 @@ async def tool_svd_read(
 
 
 @mcp.tool(
-    name="pyocd.svd.write",
+    name="pyocd_svd_write",
     description="Write a value to a peripheral register by name.",
 )
 async def tool_svd_write(
@@ -617,7 +617,7 @@ async def tool_svd_write(
 
 
 @mcp.tool(
-    name="pyocd.svd.list_fields",
+    name="pyocd_svd_list_fields",
     description="List all bit fields of a peripheral register, showing name, bit range, width, and description.",
 )
 async def tool_svd_list_fields(
@@ -631,7 +631,7 @@ async def tool_svd_list_fields(
 
 
 @mcp.tool(
-    name="pyocd.svd.set_field",
+    name="pyocd_svd_set_field",
     description=(
         "Set a single bit field of a peripheral register using read-modify-write. "
         "Only the specified field is changed; other fields are preserved. "
@@ -653,7 +653,7 @@ async def tool_svd_set_field(
 # ─── Watchpoint tools ────────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.watchpoint.set",
+    name="pyocd_watchpoint_set",
     description=(
         "Set a hardware watchpoint (data breakpoint). Triggers a halt when "
         "the target reads/writes a specific memory address. Essential for "
@@ -673,7 +673,7 @@ async def tool_watchpoint_set(
 
 
 @mcp.tool(
-    name="pyocd.watchpoint.clear",
+    name="pyocd_watchpoint_clear",
     description="Remove a watchpoint at the given address.",
 )
 async def tool_watchpoint_clear(
@@ -686,7 +686,7 @@ async def tool_watchpoint_clear(
 
 
 @mcp.tool(
-    name="pyocd.watchpoint.clear_all",
+    name="pyocd_watchpoint_clear_all",
     description="Remove all active watchpoints.",
 )
 async def tool_watchpoint_clear_all() -> str:
@@ -697,7 +697,7 @@ async def tool_watchpoint_clear_all() -> str:
 
 
 @mcp.tool(
-    name="pyocd.watchpoint.list",
+    name="pyocd_watchpoint_list",
     description="List all active watchpoints.",
 )
 async def tool_watchpoint_list() -> str:
@@ -710,7 +710,7 @@ async def tool_watchpoint_list() -> str:
 # ─── Advanced debug tools ────────────────────────────────────────────────────
 
 @mcp.tool(
-    name="pyocd.target.wait_halt",
+    name="pyocd_target_wait_halt",
     description=(
         "Resume target execution and wait for it to halt (breakpoint hit, watchpoint "
         "triggered, or manual halt). This is the KEY tool for 'set breakpoint → run → "
@@ -811,7 +811,7 @@ async def tool_target_wait_halt(
 
 
 @mcp.tool(
-    name="pyocd.debug.fault_analyze",
+    name="pyocd_debug_fault_analyze",
     description=(
         "Analyze a HardFault/BusFault/MemManage/UsageFault crash. Reads all SCB "
         "fault registers, decodes fault bits, reads the exception stack frame to "
@@ -827,7 +827,7 @@ async def tool_debug_fault_analyze() -> str:
 
 
 @mcp.tool(
-    name="pyocd.debug.stack_overflow_check",
+    name="pyocd_debug_stack_overflow_check",
     description=(
         "Check if a thread's stack has overflowed by comparing SP against the "
         "TCB's stack bounds. For RT-Thread: provide TCB address, offsets default "
@@ -851,7 +851,7 @@ async def tool_debug_stack_overflow_check(
 
 
 @mcp.tool(
-    name="pyocd.debug.sample_variable",
+    name="pyocd_debug_sample_variable",
     description=(
         "Periodically sample a memory location (global variable). Reads a variable "
         "every N seconds for M samples while target is running. Returns all samples "
@@ -931,7 +931,7 @@ async def tool_debug_sample_variable(
 
 
 @mcp.tool(
-    name="pyocd.target.list_supported",
+    name="pyocd_target_list_supported",
     description=(
         "List all MCU targets supported by pyocd (206+ built-in targets). "
         "Includes HC32, STM32, NXP, Nordic, Cypress and more. "

@@ -443,7 +443,7 @@ def describe(peripheral_name: str, register_name: str | None = None) -> dict:
                 "bits": f"[{f.bit_offset + f.bit_width - 1}:{f.bit_offset}]",
                 "width": f.bit_width,
                 "description": (f.description or "").strip(),
-                "access": getattr(f, "access", None),
+                "access": getattr(f, "access", None).value if getattr(f, "access", None) is not None else None,
             }
             if f.enumerated_values:
                 finfo["enums"] = [

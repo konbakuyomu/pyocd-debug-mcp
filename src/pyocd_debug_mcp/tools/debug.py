@@ -570,17 +570,81 @@ def _resolve_frame_symbol(target, addr: int) -> dict:
     return result
 
 
-def backtrace(scan_depth: int = 512, max_frames: int = 16) -> dict:
-    """Perform stack backtrace using heuristic scanning with BL validation.
+def _try_precise_unwind(target, elf_path: str, pc: int, lr: int, sp: int,
+                        max_frames: int) -> tuple[list[dict], str] | None:
+    """Attempt precise stack unwinding using DWARF CFI or EHABI.
 
-    Three-tier accuracy:
-    1. If ELF attached with .debug_frame/.ARM.exidx → FDE-enhanced scan
-       (function boundary validation eliminates most false positives)
-    2. BL/BLX instruction validation at candidate return addresses
-    3. Flash range + Thumb bit filtering
+    Returns (frames_list, method_string) on success, or None if precise
+    unwinding is not available or fails on the first frame.
+    """
+    try:
+        from .unwinder import PreciseUnwinder
+    except ImportError:
+        return None
+
+    try:
+        unwinder = PreciseUnwinder(elf_path)
+    except (ValueError, Exception) as e:
+        logger.debug("Precise unwinder init failed: %s", e)
+        return None
+
+    # Build initial register set
+    initial_regs: dict[int, int] = {
+        13: sp,
+        14: lr,
+        15: pc,
+    }
+    # Read additional callee-saved registers for more accurate unwinding
+    for reg_name, reg_num in [
+        ("r4", 4), ("r5", 5), ("r6", 6), ("r7", 7),
+        ("r8", 8), ("r9", 9), ("r10", 10), ("r11", 11), ("r12", 12),
+    ]:
+        try:
+            initial_regs[reg_num] = target.read_core_register(reg_name)
+        except Exception:
+            pass
+
+    def read_mem(addr: int) -> int:
+        return target.read32(addr)
+
+    try:
+        raw_frames = unwinder.unwind(initial_regs, read_mem, max_frames)
+    except Exception as e:
+        logger.debug("Precise unwind failed: %s", e)
+        return None
+
+    if len(raw_frames) < 1:
+        return None
+
+    # Convert raw frames to our display format
+    frames = []
+    for rf in raw_frames:
+        frame_pc = rf["pc"]
+        frame = _resolve_frame_symbol(target, frame_pc)
+        frame.update({
+            "depth": rf["frame_num"],
+            "type": rf["method"],
+        })
+        if rf["frame_num"] > 0:
+            frame["sp"] = f"0x{rf['sp']:08X}"
+        frames.append(frame)
+
+    method = f"precise_{unwinder.method}"
+    return (frames, method)
+
+
+def backtrace(scan_depth: int = 512, max_frames: int = 16) -> dict:
+    """Perform stack backtrace with precise unwinding + heuristic fallback.
+
+    Unwinding priority:
+    1. Precise: EHABI (.ARM.exidx) or DWARF CFI (.debug_frame)
+       - Frame-by-frame register recovery using unwind tables
+       - Accurate for AC5 (armcc), AC6 (armclang), and GCC
+    2. Heuristic fallback: FDE-enhanced stack scan + BL validation
+       - Used when precise unwinding is unavailable or fails
 
     Args:
-        scan_depth: Bytes to scan from SP upward (default 512).
+        scan_depth: Bytes to scan from SP upward for heuristic (default 512).
         max_frames: Maximum frames to return (default 16).
 
     Returns:
@@ -597,12 +661,37 @@ def backtrace(scan_depth: int = 512, max_frames: int = 16) -> dict:
     sp = target.read_core_register("sp")
     xpsr = target.read_core_register("xpsr")
 
+    # Try precise unwinding first
+    info = session_mgr.info
+    if info and info.elf_path:
+        precise = _try_precise_unwind(target, info.elf_path, pc, lr, sp, max_frames)
+        if precise is not None:
+            frames, method = precise
+            in_exception = (xpsr & 0x1FF) != 0
+            result = {
+                "frames": frames,
+                "total_frames": len(frames),
+                "method": method,
+                "registers": {
+                    "pc": f"0x{pc:08X}",
+                    "lr": f"0x{lr:08X}",
+                    "sp": f"0x{sp:08X}",
+                },
+            }
+            if in_exception:
+                exc_num = xpsr & 0x1FF
+                result["exception_context"] = {
+                    "in_exception": True,
+                    "exception_number": exc_num,
+                    "exception_name": _exception_name(exc_num),
+                }
+            return result
+
+    # Fallback: heuristic scanning
     flash_start, flash_end = _get_flash_range(target)
 
-    # Build function map from ELF if available
     func_map = None
     method = "heuristic"
-    info = session_mgr.info
     if info and info.elf_path:
         func_map = _build_function_map(info.elf_path)
         if func_map:

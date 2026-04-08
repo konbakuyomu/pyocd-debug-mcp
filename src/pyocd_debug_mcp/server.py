@@ -970,9 +970,10 @@ async def tool_target_list_supported(
 @mcp.tool(
     name="pyocd_debug_backtrace",
     description=(
-        "Perform stack backtrace to show the full call chain. Uses heuristic "
-        "stack scanning with BL/BLX instruction validation. When ELF is attached, "
-        "enhances accuracy using .debug_frame/.ARM.exidx function boundary data. "
+        "Perform precise stack backtrace to show the full call chain. "
+        "Uses DWARF CFI (.debug_frame) or EHABI (.ARM.exidx) for frame-accurate "
+        "unwinding across all ARM toolchains (AC5/AC6/GCC). Falls back to "
+        "heuristic stack scanning with BL validation if precise unwinding fails. "
         "Returns ordered frames: depth 0 = current PC, deeper = callers. "
         "Essential for understanding HOW code reached the current point."
     ),

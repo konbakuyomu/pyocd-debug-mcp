@@ -67,4 +67,10 @@ def get_status() -> dict:
         result["pc"] = f"0x{target.read_core_register('pc'):08X}"
         result["sp"] = f"0x{target.read_core_register('sp'):08X}"
         result["lr"] = f"0x{target.read_core_register('lr'):08X}"
+    elif state == Target.State.LOCKUP:
+        result["message"] = (
+            "CPU is in LOCKUP state (double fault: a fault occurred inside "
+            "HardFault/NMI handler). Use pyocd_target_halt() to halt, then "
+            "pyocd_debug_fault_analyze() for crash analysis."
+        )
     return result

@@ -117,7 +117,7 @@ async def tool_session_connect(
             "probe_id": info.probe_id,
             "target": info.target_type,
             "frequency": info.frequency,
-            "vector_catch": "all_faults (HardFault/BusFault/MemManage/UsageFault auto-halt enabled)",
+            "vector_catch": "all_faults (HardFault/BusFault/MemManage/UsageFault/SecureFault auto-halt + lockup detection)",
         })
     except Exception as e:
         return _error(f"Connection failed: {e}")
@@ -734,7 +734,8 @@ async def tool_watchpoint_list() -> str:
         "wait for hit → inspect' debugging workflow. Returns halt reason, PC, and "
         "registers when the target stops. Sends progress notifications to prevent "
         "AI client timeouts during long waits. Automatically includes a compact "
-        "backtrace (top 4 frames) showing the call chain when halted."
+        "backtrace (top 4 frames) showing the call chain when halted. "
+        "Also detects CPU LOCKUP state (double fault) immediately."
     ),
 )
 async def tool_target_wait_halt(
@@ -767,6 +768,53 @@ async def tool_target_wait_halt(
 
         while True:
             state = await asyncio.to_thread(_target.get_state)
+
+            # ── LOCKUP detection (double fault / unrecoverable) ──
+            if state == Target.State.LOCKUP:
+                elapsed = time.monotonic() - start
+                # Halt CPU to exit lockup and allow register reads
+                try:
+                    await asyncio.to_thread(_target.halt)
+                except Exception:
+                    pass
+                result = {
+                    "status": "lockup",
+                    "halt_reason": "LOCKUP (CPU double fault — unrecoverable)",
+                    "elapsed_seconds": round(elapsed, 3),
+                    "message": (
+                        "CPU entered lockup state (double fault: a fault occurred "
+                        "inside HardFault/NMI handler). Use pyocd_debug_fault_analyze() "
+                        "for detailed crash analysis."
+                    ),
+                }
+                try:
+                    pc = await asyncio.to_thread(_target.read_core_register, "pc")
+                    lr = await asyncio.to_thread(_target.read_core_register, "lr")
+                    sp = await asyncio.to_thread(_target.read_core_register, "sp")
+                    result["pc"] = f"0x{pc:08X}"
+                    result["lr"] = f"0x{lr:08X}"
+                    result["sp"] = f"0x{sp:08X}"
+                except Exception:
+                    result["registers_note"] = "Could not read registers from lockup state"
+                # Try symbol resolution
+                try:
+                    elf_file = session_mgr.target.elf
+                    if elf_file is not None and "pc" in result:
+                        sym = elf_file.symbol_decoder.get_symbol_for_address(pc)
+                        if sym:
+                            result["symbol"] = sym.name
+                except Exception:
+                    pass
+                # Try backtrace
+                try:
+                    bt = await asyncio.to_thread(debug_tools.compact_backtrace, 4)
+                    if bt:
+                        result["backtrace"] = bt
+                except Exception:
+                    pass
+                return _json(result)
+
+            # ── Normal HALTED detection ──
             if state == Target.State.HALTED:
                 pc = await asyncio.to_thread(_target.read_core_register, "pc")
                 lr = await asyncio.to_thread(_target.read_core_register, "lr")
@@ -850,7 +898,7 @@ async def tool_target_wait_halt(
 @mcp.tool(
     name="pyocd_debug_fault_analyze",
     description=(
-        "Analyze a HardFault/BusFault/MemManage/UsageFault crash. Reads all SCB "
+        "Analyze a HardFault/BusFault/MemManage/UsageFault/SecureFault crash. Reads all SCB "
         "fault registers, decodes fault bits, reads the exception stack frame to "
         "find the fault PC (crash address) and caller LR. Also decodes EXC_RETURN "
         "for FPU/MSP/PSP context. Call this when target is halted in a fault handler."

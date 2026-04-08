@@ -174,7 +174,8 @@ class SessionManager:
         except Exception:
             pass
 
-    # Default mask: all faults except CORE_RESET and SECURE_FAULT
+    # Default mask: all faults except CORE_RESET (which would halt on every reset)
+    # Includes SECURE_FAULT for ARMv8-M TrustZone targets (harmless RAZ/WI on v6-M/v7-M)
     _FAULT_VC_MASK = (
         Target.VectorCatch.HARD_FAULT       # HardFault
         | Target.VectorCatch.BUS_FAULT      # BusFault
@@ -183,6 +184,7 @@ class SessionManager:
         | Target.VectorCatch.STATE_ERR      # UsageFault: invalid state
         | Target.VectorCatch.CHECK_ERR      # UsageFault: checking error
         | Target.VectorCatch.COPROCESSOR_ERR  # UsageFault: no coprocessor
+        | Target.VectorCatch.SECURE_FAULT   # SecureFault (ARMv8-M only, ignored on others)
     )
 
     def _enable_fault_vector_catch(self) -> None:

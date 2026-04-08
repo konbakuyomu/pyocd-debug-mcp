@@ -30,6 +30,10 @@ SCB_MMFAR = 0xE000ED34  # MemManage Fault Address
 SCB_BFAR = 0xE000ED38  # BusFault Address
 SCB_AFSR = 0xE000ED3C  # Auxiliary Fault Status Register
 
+# ARMv8-M SecureFault registers (not present on v6-M/v7-M, reads return 0)
+SCB_SFSR = 0xE000EDE4  # SecureFault Status Register
+SCB_SFAR = 0xE000EDE8  # SecureFault Address Register
+
 # CFSR sub-register bit definitions
 MMFSR_BITS = {
     0: ("IACCVIOL", "Instruction access violation"),
@@ -66,6 +70,18 @@ HFSR_BITS = {
     31: ("DEBUGEVT", "Debug event"),
 }
 
+# ARMv8-M SecureFault Status Register bit definitions
+SFSR_BITS = {
+    0: ("INVEP", "Invalid entry point (non-SG instruction at NS-callable boundary)"),
+    1: ("INVIS", "Invalid integrity signature on exception return"),
+    2: ("INVER", "Invalid exception return"),
+    3: ("APTS", "Attribution unit violation (v8.1-M)"),
+    4: ("INVTRAN", "Invalid transition from Secure to Non-secure"),
+    5: ("LSPERR", "Lazy FP state preservation error"),
+    6: ("SFARVALID", "SFAR holds valid fault address"),
+    7: ("LSERR", "Lazy FP state error (load)"),
+}
+
 
 def _decode_bits(value: int, bit_defs: dict, offset: int = 0) -> list[dict]:
     """Decode register bits using definitions.
@@ -83,22 +99,32 @@ def _decode_bits(value: int, bit_defs: dict, offset: int = 0) -> list[dict]:
 
 
 def fault_analyze() -> dict:
-    """Analyze the current HardFault state.
+    """Analyze the current fault state (all Cortex-M variants).
 
     Reads all SCB fault registers, decodes fault bits, extracts the
     exception stack frame (PC = fault address, LR = caller), and
     determines the EXC_RETURN type for FPU/stack pointer context.
 
-    The target should be halted in a fault handler when calling this.
+    Handles:
+    - HardFault / BusFault / MemManage / UsageFault (ARMv7-M+)
+    - SecureFault (ARMv8-M with TrustZone)
+    - HardFault-only on ARMv6-M (Cortex-M0/M0+)
+    - CPU Lockup (double fault — unrecoverable)
+
+    The target should be halted (or in lockup) when calling this.
     """
     target = session_mgr.target
 
-    # Ensure target is halted
+    # Handle lockup: halt the CPU first to allow register reads
     state = target.get_state()
-    if state != Target.State.HALTED:
+    was_lockup = False
+    if state == Target.State.LOCKUP:
+        was_lockup = True
+        target.halt()
+    elif state != Target.State.HALTED:
         target.halt()
 
-    # Read fault registers
+    # Read standard fault registers (ARMv7-M+; on ARMv6-M CFSR/HFSR may read as 0)
     cfsr = target.read32(SCB_CFSR)
     hfsr = target.read32(SCB_HFSR)
     dfsr = target.read32(SCB_DFSR)
@@ -124,6 +150,25 @@ def fault_analyze() -> dict:
         "fault_type": "unknown",
     }
 
+    if was_lockup:
+        result["lockup"] = True
+        result["lockup_note"] = (
+            "CPU was in LOCKUP state (double fault: a fault occurred inside "
+            "HardFault/NMI handler). The CPU has been halted for analysis."
+        )
+
+    # Read SecureFault registers (ARMv8-M only; reads 0 on v6-M/v7-M)
+    sfsr = 0
+    sfar = 0
+    try:
+        sfsr = target.read32(SCB_SFSR)
+        sfar = target.read32(SCB_SFAR)
+        if sfsr:
+            result["fault_registers"]["SFSR"] = f"0x{sfsr:08X}"
+            result["fault_registers"]["SFAR"] = f"0x{sfar:08X}"
+    except Exception:
+        pass  # SFSR/SFAR not accessible (not ARMv8-M, or debug auth issue)
+
     # Decode active faults
     faults = []
     faults.extend(_decode_bits(mmfsr, MMFSR_BITS, 0))
@@ -131,10 +176,18 @@ def fault_analyze() -> dict:
     faults.extend(_decode_bits(ufsr, UFSR_BITS, 16))
     hf = _decode_bits(hfsr, HFSR_BITS, 0)
     faults.extend(hf)
+    if sfsr:
+        sf = _decode_bits(sfsr, SFSR_BITS, 0)
+        faults.extend([{**f, "register": "SFSR"} for f in sf])
     result["active_faults"] = faults
 
-    # Determine fault type
-    if mmfsr:
+    # Determine fault type (priority: SecureFault > MemManage > BusFault > UsageFault > HardFault)
+    if sfsr & 0x3F:  # Any SFSR fault bit (excluding SFARVALID/LSERR flags)
+        result["fault_type"] = "SecureFault"
+        if sfsr & (1 << 6):  # SFARVALID
+            result["fault_address"] = f"0x{sfar:08X}"
+            result["fault_address_source"] = "SFAR"
+    elif mmfsr:
         result["fault_type"] = "MemManage"
     elif bfsr:
         result["fault_type"] = "BusFault"
@@ -145,13 +198,26 @@ def fault_analyze() -> dict:
     elif hfsr:
         result["fault_type"] = "HardFault"
 
-    # Fault address
-    if mmfsr & (1 << 7):  # MMARVALID
-        result["fault_address"] = f"0x{mmfar:08X}"
-        result["fault_address_source"] = "MMFAR"
-    elif bfsr & (1 << 7):  # BFARVALID
-        result["fault_address"] = f"0x{bfar:08X}"
-        result["fault_address_source"] = "BFAR"
+    # Fault address for MemManage/BusFault
+    if "fault_address" not in result:
+        if mmfsr & (1 << 7):  # MMARVALID
+            result["fault_address"] = f"0x{mmfar:08X}"
+            result["fault_address_source"] = "MMFAR"
+        elif bfsr & (1 << 7):  # BFARVALID
+            result["fault_address"] = f"0x{bfar:08X}"
+            result["fault_address_source"] = "BFAR"
+
+    # ARMv6-M detection: if CFSR/HFSR are all zero but we're in HardFault,
+    # it's likely a Cortex-M0/M0+ (no CFSR/HFSR registers)
+    exception_num = icsr & 0x1FF
+    if exception_num == 3 and cfsr == 0 and hfsr == 0:
+        result["armv6m_note"] = (
+            "CFSR/HFSR read as zero — this may be a Cortex-M0/M0+ (ARMv6-M) "
+            "which has no configurable fault registers. All faults are HardFault. "
+            "Use the stacked PC and LR from the exception frame to identify the "
+            "faulting instruction."
+        )
+        result["fault_type"] = "HardFault (ARMv6-M — no CFSR/HFSR)"
 
     # Read EXC_RETURN from LR
     lr = target.read_core_register("lr")
@@ -163,7 +229,6 @@ def fault_analyze() -> dict:
         result["exception_frame"] = stack_frame
 
     # Active exception number from ICSR
-    exception_num = icsr & 0x1FF
     result["active_exception"] = exception_num
     result["exception_name"] = _exception_name(exception_num)
 
@@ -258,6 +323,7 @@ def _exception_name(num: int) -> str:
         4: "MemManage",
         5: "BusFault",
         6: "UsageFault",
+        7: "SecureFault",  # ARMv8-M only
         11: "SVCall",
         12: "DebugMonitor",
         14: "PendSV",

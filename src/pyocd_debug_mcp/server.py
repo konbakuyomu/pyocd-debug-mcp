@@ -26,6 +26,7 @@ try:
     from pyocd_debug_mcp.tools import watchpoint as wp_tools
     from pyocd_debug_mcp.tools import debug as debug_tools
     from pyocd_debug_mcp.tools.debug import SCB_DFSR
+    from pyocd_debug_mcp.tools import rtt as rtt_tools
 except ImportError:
     from .session_manager import session_mgr
     from .tools import probe, target, register, memory
@@ -34,6 +35,7 @@ except ImportError:
     from .tools import watchpoint as wp_tools
     from .tools import debug as debug_tools
     from .tools.debug import SCB_DFSR
+    from .tools import rtt as rtt_tools
 
 from pyocd.core.target import Target
 
@@ -167,6 +169,7 @@ async def tool_session_status() -> str:
     description=(
         "Program a firmware file (.hex/.bin/.elf) to the target flash. "
         "For armclang-compiled firmware, prefer .hex format to avoid ELF compatibility issues. "
+        "When programming a .elf file, automatically attaches it for symbol resolution. "
         "Sends progress notifications to prevent AI client timeouts during programming."
     ),
 )
@@ -212,10 +215,21 @@ async def tool_flash_program(
 
         await task  # re-raise any exception
 
-        return _json({
+        result = {
             "file": str(path), "format": suffix,
             "erase": erase, "status": "programmed",
-        })
+        }
+
+        # Auto-attach ELF for symbol resolution
+        if suffix == ".elf":
+            try:
+                session_mgr.attach_elf(str(path))
+                result["elf_auto_attached"] = True
+            except Exception as e:
+                result["elf_auto_attached"] = False
+                result["elf_attach_error"] = str(e)
+
+        return _json(result)
     except Exception as e:
         return _error(f"Flash programming failed: {e}")
 
@@ -258,6 +272,44 @@ async def tool_flash_erase(
         return _json({"status": "erased", "mode": "chip" if chip_erase else "sector"})
     except Exception as e:
         return _error(f"Flash erase failed: {e}")
+
+
+@mcp.tool(
+    name="pyocd_flash_verify",
+    description=(
+        "Verify the target's Flash content matches a firmware file. "
+        "Reads Flash and compares segment by segment. Supports .hex, .bin, and .elf formats. "
+        "Returns verified:true if match, or first mismatch address if different. "
+        "Sends progress notifications to prevent AI client timeouts during verification."
+    ),
+)
+async def tool_flash_verify(
+    file_path: Annotated[str, "Absolute path to firmware file (.hex, .bin, or .elf)"],
+    base_address: Annotated[Optional[int | str], "Base address for .bin files (default: 0x00000000). Ignored for .hex/.elf"] = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        addr = _parse_addr(base_address)
+
+        async def _do_verify():
+            return await asyncio.to_thread(flash.verify, file_path, base_address=addr)
+
+        task = asyncio.create_task(_do_verify())
+
+        tick = 0
+        while not task.done():
+            tick += 1
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(progress=tick, total=tick + 1)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.3)
+
+        result = await task
+        return _json(result)
+    except Exception as e:
+        return _error(f"Flash verify failed: {e}")
 
 
 # ─── Target control tools ────────────────────────────────────────────────────
@@ -430,16 +482,19 @@ async def tool_memory_dump(
 
 @mcp.tool(
     name="pyocd_breakpoint_set",
-    description="Set a hardware breakpoint at an address or symbol name (requires ELF).",
+    description="Set a hardware breakpoint at an address or symbol name (requires ELF). Supports hw (hardware), sw (software), or auto breakpoint types. Software breakpoints survive across more addresses but are lost on reset; hardware breakpoints are limited in number but don't modify flash.",
 )
 async def tool_breakpoint_set(
     address: Annotated[Optional[int | str], "Breakpoint address (integer or hex string)"] = None,
     symbol: Annotated[Optional[str], "Function/symbol name (requires ELF attached)"] = None,
+    bp_type: Annotated[str, "Breakpoint type: 'hw' (hardware, default), 'sw' (software), or 'auto'"] = "hw",
 ) -> str:
     if address is None and symbol is None:
         return _error("Must specify 'address' or 'symbol'.")
     try:
-        return _json(bp_tools.set_breakpoint(address=_parse_addr(address), symbol=symbol))
+        return _json(bp_tools.set_breakpoint(
+            address=_parse_addr(address), symbol=symbol, bp_type=bp_type,
+        ))
     except Exception as e:
         return _error(str(e))
 
@@ -657,10 +712,48 @@ async def tool_svd_set_field(
     peripheral: Annotated[str, "Peripheral name"],
     register: Annotated[str, "Register name"],
     field: Annotated[str, "Bit field name within the register"],
-    value: Annotated[int, "Value to set (must fit within field width)"],
+    value: Annotated[int | str, "Value to set (integer or enum name string)"],
 ) -> str:
     try:
         return _json(svd.set_field(peripheral, register, field, value))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_svd_update_fields",
+    description=(
+        "Set multiple bit fields of a register in a single read-modify-write. "
+        "Accepts a dict mapping field names to integer values or enum name strings. "
+        "All fields are updated atomically. "
+        "Example: update_fields('GPIOA', 'MODER', {'MODER0': 1, 'MODER1': 2})"
+    ),
+)
+async def tool_svd_update_fields(
+    peripheral: Annotated[str, "Peripheral name"],
+    register: Annotated[str, "Register name"],
+    fields: Annotated[dict[str, int | str], "Map of field names to values (integer or enum name)"],
+) -> str:
+    try:
+        return _json(svd.update_fields(peripheral, register, fields))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_svd_describe",
+    description=(
+        "Return full description of a peripheral or specific register. "
+        "Without register_name, lists all registers with descriptions. "
+        "With register_name, shows all fields with bit ranges, descriptions, and enumerated values."
+    ),
+)
+async def tool_svd_describe(
+    peripheral: Annotated[str, "Peripheral name (e.g. 'GPIOA', 'USART1')"],
+    register: Annotated[Optional[str], "Register name (omit for peripheral overview)"] = None,
+) -> str:
+    try:
+        return _json(svd.describe(peripheral, register))
     except Exception as e:
         return _error(str(e))
 
@@ -1244,6 +1337,86 @@ async def tool_debug_backtrace(
             scan_depth=scan_depth,
             max_frames=max_frames,
         ))
+    except Exception as e:
+        return _error(str(e))
+
+
+# ─── RTT (Real-Time Transfer) tools ─────────────────────────────────────────
+
+@mcp.tool(
+    name="pyocd_rtt_start",
+    description=(
+        "Start RTT (Real-Time Transfer) and discover channels. "
+        "Searches target RAM for the SEGGER RTT control block. "
+        "Returns up/down channel names and sizes. Target must be halted or have RTT initialized."
+    ),
+)
+async def tool_rtt_start(
+    address: Annotated[Optional[int | str], "RTT control block address (omit to auto-search)"] = None,
+    size: Annotated[Optional[int], "Search size in bytes (default: auto)"] = None,
+    control_block_id: Annotated[str, "RTT control block ID string"] = "SEGGER RTT",
+) -> str:
+    try:
+        addr = _parse_addr(address) if address is not None else None
+        return _json(rtt_tools.start(address=addr, size=size, control_block_id=control_block_id))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_rtt_stop",
+    description="Stop RTT and release resources.",
+)
+async def tool_rtt_stop() -> str:
+    try:
+        return _json(rtt_tools.stop())
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_rtt_read",
+    description=(
+        "Read data from an RTT up channel. Returns text (decoded) and hex. "
+        "Non-blocking: returns empty if no data available."
+    ),
+)
+async def tool_rtt_read(
+    channel: Annotated[int, "Up channel index (default 0)"] = 0,
+    max_bytes: Annotated[int, "Maximum bytes to read (default 1024)"] = 1024,
+    encoding: Annotated[str, "Text encoding (default 'utf-8')"] = "utf-8",
+) -> str:
+    try:
+        return _json(rtt_tools.read(channel=channel, max_bytes=max_bytes, encoding=encoding))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_rtt_write",
+    description=(
+        "Write data to an RTT down channel. "
+        "The data string is encoded before sending. Returns bytes written."
+    ),
+)
+async def tool_rtt_write(
+    data: Annotated[str, "Text data to send"],
+    channel: Annotated[int, "Down channel index (default 0)"] = 0,
+    encoding: Annotated[str, "Text encoding (default 'utf-8')"] = "utf-8",
+) -> str:
+    try:
+        return _json(rtt_tools.write(data=data, channel=channel, encoding=encoding))
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_rtt_status",
+    description="Get RTT status: running/stopped, channel info, bytes available.",
+)
+async def tool_rtt_status() -> str:
+    try:
+        return _json(rtt_tools.status())
     except Exception as e:
         return _error(str(e))
 

@@ -57,6 +57,7 @@ class SessionManager:
         self._info: Optional[SessionInfo] = None
         self._elf_provider: Optional[ELFSymbolProvider] = None
         self._svd_device = None
+        self._breakpoint_registry: list[dict] = []
         self._initialized = True
 
     @property
@@ -156,6 +157,7 @@ class SessionManager:
             self._info = None
             self._elf_provider = None
             self._svd_device = None
+            self._breakpoint_registry.clear()
             # Clean up module-level tracking state
             self._cleanup_tool_state()
             logger.info("Session disconnected.")
@@ -173,6 +175,11 @@ class SessionManager:
             _active_watchpoints.clear()
         except Exception:
             pass
+        try:
+            from .tools import rtt as rtt_tools
+            rtt_tools.stop()
+        except Exception:
+            pass
 
     # Default mask: all faults except CORE_RESET (which would halt on every reset)
     # Includes SECURE_FAULT for ARMv8-M TrustZone targets (harmless RAZ/WI on v6-M/v7-M)
@@ -186,6 +193,69 @@ class SessionManager:
         | Target.VectorCatch.COPROCESSOR_ERR  # UsageFault: no coprocessor
         | Target.VectorCatch.SECURE_FAULT   # SecureFault (ARMv8-M only, ignored on others)
     )
+
+    # ─── Breakpoint registry (for reset restore) ─────────────────────────
+
+    def register_breakpoint(self, address: int, symbol: str | None, bp_type: str) -> None:
+        """Register a breakpoint for auto-restore after reset."""
+        # Avoid duplicates
+        self._breakpoint_registry = [
+            bp for bp in self._breakpoint_registry if bp["address"] != address
+        ]
+        self._breakpoint_registry.append({
+            "address": address,
+            "symbol": symbol,
+            "bp_type": bp_type,
+        })
+
+    def unregister_breakpoint(self, address: int) -> None:
+        """Remove a breakpoint from the registry."""
+        self._breakpoint_registry = [
+            bp for bp in self._breakpoint_registry if bp["address"] != address
+        ]
+
+    def clear_breakpoint_registry(self) -> None:
+        """Clear all breakpoint registry entries."""
+        self._breakpoint_registry.clear()
+
+    def restore_breakpoints(self) -> dict:
+        """Re-arm all registered breakpoints after a target reset.
+
+        Returns a dict with restored count, failed list, etc.
+        """
+        if not self._breakpoint_registry:
+            return {"breakpoints_restored": 0}
+
+        from .tools.breakpoint import _active_breakpoints, _BP_TYPE_MAP
+
+        restored = 0
+        failed = []
+        target = self.target
+
+        for bp in self._breakpoint_registry:
+            addr = bp["address"]
+            bp_type_str = bp["bp_type"]
+            pyocd_type = _BP_TYPE_MAP.get(bp_type_str, Target.BreakpointType.HW)
+            try:
+                target.set_breakpoint(addr, pyocd_type)
+                # Update module-level tracking
+                _active_breakpoints[addr] = {
+                    "address": f"0x{addr:08X}",
+                    "symbol": bp.get("symbol"),
+                    "type": bp_type_str,
+                }
+                restored += 1
+            except Exception as e:
+                failed.append({
+                    "address": f"0x{addr:08X}",
+                    "error": str(e),
+                })
+                logger.warning("Failed to restore breakpoint at 0x%08X: %s", addr, e)
+
+        result = {"breakpoints_restored": restored}
+        if failed:
+            result["failed"] = failed
+        return result
 
     def _enable_fault_vector_catch(self) -> None:
         """Enable Vector Catch for all fault types.
@@ -264,7 +334,7 @@ class SessionManager:
             raise FileNotFoundError(f"Firmware file not found: {file_path}")
 
         suffix = path.suffix.lower()
-        if suffix not in (".hex", ".bin", ".elf"):
+        if suffix not in (".hex", ".bin", ".elf", ".axf"):
             raise ValueError(f"Unsupported firmware format: {suffix}. Use .hex, .bin, or .elf")
 
         programmer = FileProgrammer(self.session)

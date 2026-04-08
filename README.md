@@ -2,22 +2,25 @@
 
 > **让 AI 全自动进行嵌入式单片机仿真调试的 MCP Server**
 
-通过 [pyOCD](https://pyocd.io/) + CMSIS-DAP 探针，为 Claude / GitHub Copilot 等 AI 工具提供 **47 个调试工具**，涵盖从连接探针、烧录固件、打断点、读寄存器到 HardFault 故障分析的完整调试流程。
+通过 [pyOCD](https://pyocd.io/) + CMSIS-DAP 探针，为 Claude / GitHub Copilot 等 AI 工具提供 **55 个调试工具**，涵盖从连接探针、烧录固件、打断点、读寄存器到 HardFault 故障分析的完整调试流程。
 
 ## ✨ 核心能力
 
 | 能力 | 说明 |
 |------|------|
 | 🔌 探针管理 | 自动发现 CMSIS-DAP 探针，连接/断开 |
-| ⚡ 烧录 | 支持 `.hex` / `.bin` / `.elf` 固件烧录 |
-| 🎯 断点 & 监视点 | 硬件断点（地址/符号名）、数据监视点（读/写/读写） |
+| ⚡ 烧录 | 支持 `.hex` / `.bin` / `.elf` / `.axf` 固件烧录，烧录 ELF 自动附加符号 |
+| ✅ Flash 校验 | 烧录后逐段对比验证，检测 Flash 损坏或烧录异常 |
+| 🎯 断点 & 监视点 | 硬件断点 / 软件断点 / 自动选择（地址或符号名），数据监视点（读/写/读写） |
+| 🔄 断点恢复 | Reset 后自动恢复所有断点（软件断点 Reset 后丢失，自动重设） |
 | ⏳ 等待机制 | `wait_halt` — AI 打断点 → 运行 → 等待命中 → 分析 |
 | 📊 变量采样 | 周期性采样全局变量，返回统计数据 |
 | 💥 故障分析 | HardFault/BusFault/UsageFault 全自动解析 |
 | 📏 栈溢出检测 | 支持 RT-Thread / FreeRTOS TCB 栈边界检查 |
 | 🔍 栈回溯 | DWARF CFI / EHABI / 启发式三级容错，覆盖 AC5/AC6/GCC |
-| 🔧 寄存器 & 内存 | 读/写 CPU 寄存器、内存、外设寄存器（SVD） |
+| 🔧 寄存器 & 内存 | 读/写 CPU 寄存器、内存、外设寄存器（SVD），支持批量位域更新和枚举值 |
 | 📋 符号解析 | 通过 ELF 文件将地址映射到函数名/变量名 |
+| 📡 RTT 实时传输 | SEGGER RTT 通道读写，免 UART 打印调试 |
 | 🆕 地址格式 | 所有地址参数同时接受整数和十六进制字符串（如 `"0x1FFE000E"`） |
 | 🆕 组合工具 | `read_symbol` 一步读取变量值、`step_out` 执行到函数返回 |
 
@@ -105,7 +108,7 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 
 > 💡 将 `/path/to/pyocd-debug-mcp` 替换为你的实际路径。Windows 下使用 `\\` 或 `/` 均可。
 
-## 🛠️ 工具列表（47 个）
+## 🛠️ 工具列表（55 个）
 
 ### 探针 & 会话
 
@@ -121,8 +124,9 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd_flash_program` | 烧录固件（.hex / .bin / .elf） |
+| `pyocd_flash_program` | 烧录固件（.hex / .bin / .elf / .axf），烧录 ELF/AXF 自动附加符号 |
 | `pyocd_flash_erase` | 擦除 Flash |
+| `pyocd_flash_verify` | 🆕 校验 Flash 内容是否与固件文件一致（逐段对比） |
 
 ### 目标控制
 
@@ -131,7 +135,7 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 | `pyocd_target_halt` | 暂停 CPU |
 | `pyocd_target_resume` | 恢复运行 |
 | `pyocd_target_step` | 单步执行 |
-| `pyocd_target_reset` | 复位 MCU |
+| `pyocd_target_reset` | 复位 MCU（自动恢复所有断点） |
 | `pyocd_target_status` | 获取目标状态（运行/停止）及关键寄存器 |
 | `pyocd_target_wait_halt` | ⏳ **等待目标停止**（断点命中/监视点触发），支持 `user_hint` 提示 |
 | `pyocd_target_step_out` | 🆕 执行到当前函数返回（自动设临时断点在 LR） |
@@ -153,7 +157,7 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 
 | 工具名 | 说明 |
 |--------|------|
-| `pyocd_breakpoint_set` | 设置硬件断点（地址或符号名） |
+| `pyocd_breakpoint_set` | 设置断点（地址或符号名），支持 hw/sw/auto 三种类型 |
 | `pyocd_breakpoint_clear` | 清除断点 |
 | `pyocd_breakpoint_clear_all` | 清除所有断点 |
 | `pyocd_breakpoint_list` | 列出当前断点 |
@@ -183,7 +187,9 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 | `pyocd_svd_read` | 按名称读外设寄存器（含位域解析） |
 | `pyocd_svd_write` | 按名称写外设寄存器 |
 | `pyocd_svd_list_fields` | 列出寄存器的所有位域（名称、位范围、宽度） |
-| `pyocd_svd_set_field` | 设置单个位域值（read-modify-write，不影响其他位域） |
+| `pyocd_svd_set_field` | 设置单个位域值（RMW，支持枚举名或整数） |
+| `pyocd_svd_update_fields` | 🆕 批量设置多个位域（单次 RMW，原子操作） |
+| `pyocd_svd_describe` | 🆕 查看外设/寄存器详细描述（含枚举值定义） |
 
 ### 高级调试
 
@@ -193,6 +199,16 @@ claude mcp add pyocd-debug -- uv --directory /path/to/pyocd-debug-mcp run pyocd-
 | `pyocd_debug_stack_overflow_check` | 📏 检查线程栈溢出（RT-Thread / FreeRTOS） |
 | `pyocd_debug_sample_variable` | 📊 周期性采样变量（如每 0.5s 采样 200 次） |
 | `pyocd_debug_backtrace` | 🔍 **精确栈回溯** — DWARF CFI / EHABI / 启发式三级容错，覆盖 AC5/AC6/GCC |
+
+### RTT 实时传输
+
+| 工具名 | 说明 |
+|--------|------|
+| `pyocd_rtt_start` | 🆕 启动 RTT 并发现通道（自动搜索 SEGGER RTT 控制块） |
+| `pyocd_rtt_stop` | 🆕 停止 RTT 并释放资源 |
+| `pyocd_rtt_read` | 🆕 从 RTT 上行通道读取数据（非阻塞） |
+| `pyocd_rtt_write` | 🆕 向 RTT 下行通道写入数据 |
+| `pyocd_rtt_status` | 🆕 查看 RTT 状态和通道信息 |
 
 ## 🚀 典型调试流程
 
@@ -315,18 +331,19 @@ AI: pyocd_target_step_out(timeout=5.0)
 pyocd-debug-mcp/
 ├── pyproject.toml              # 项目配置和依赖
 ├── src/pyocd_debug_mcp/
-│   ├── server.py               # MCP Server 入口，45 个工具注册
+│   ├── server.py               # MCP Server 入口，55 个工具注册
 │   ├── session_manager.py      # 会话生命周期管理（单例）
 │   └── tools/
 │       ├── probe.py            # 探针发现
 │       ├── target.py           # 目标控制
-│       ├── flash.py            # Flash 烧录
+│       ├── flash.py            # Flash 烧录 + 校验
 │       ├── register.py         # 寄存器读写
 │       ├── memory.py           # 内存读写
-│       ├── breakpoint.py       # 断点管理
+│       ├── breakpoint.py       # 断点管理（HW/SW/AUTO + Reset 恢复）
 │       ├── watchpoint.py       # 监视点管理
 │       ├── elf.py              # ELF 符号解析
-│       ├── svd.py              # SVD 外设寄存器
+│       ├── svd.py              # SVD 外设寄存器（含批量更新、枚举、描述）
+│       ├── rtt.py              # RTT 实时传输（SEGGER RTT 通道读写）
 │       └── debug.py            # 高级调试（故障分析、栈回溯、栈检查、采样）
 └── tests/
 ```

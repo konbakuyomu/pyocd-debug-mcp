@@ -67,7 +67,13 @@ def set_watchpoint(
 def clear_watchpoint(address: int) -> dict:
     """Remove a watchpoint at the given address."""
     target = session_mgr.target
-    target.remove_watchpoint(address)
+    info = _active_watchpoints.get(address)
+    if info:
+        wp_type = _WP_TYPE_MAP.get(info["type"], Target.WatchpointType.WRITE)
+        target.remove_watchpoint(address, info["size"], wp_type)
+    else:
+        # Fallback: try default params
+        target.remove_watchpoint(address, 4, Target.WatchpointType.WRITE)
     _active_watchpoints.pop(address, None)
     return {
         "status": "cleared",
@@ -79,9 +85,10 @@ def clear_watchpoint(address: int) -> dict:
 def clear_all_watchpoints() -> dict:
     """Remove all active watchpoints."""
     target = session_mgr.target
-    for addr in list(_active_watchpoints.keys()):
+    for addr, info in list(_active_watchpoints.items()):
         try:
-            target.remove_watchpoint(addr)
+            wp_type = _WP_TYPE_MAP.get(info["type"], Target.WatchpointType.WRITE)
+            target.remove_watchpoint(addr, info["size"], wp_type)
         except Exception:
             pass
     count = len(_active_watchpoints)

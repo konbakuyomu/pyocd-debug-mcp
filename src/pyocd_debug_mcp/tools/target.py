@@ -52,7 +52,13 @@ def reset(halt_after: bool = True) -> dict:
         # Re-enable fault vector catches (reset_and_halt may modify DEMCR)
         session_mgr._enable_fault_vector_catch()
         pc = target.read_core_register("pc")
-        return {"status": "halted", "reset": True, "pc": f"0x{pc:08X}"}
+        result = {"status": "halted", "reset": True, "pc": f"0x{pc:08X}"}
+        # Auto-restore breakpoints
+        bp_result = session_mgr.restore_breakpoints()
+        result["breakpoints_restored"] = bp_result.get("breakpoints_restored", 0)
+        if "failed" in bp_result:
+            result["breakpoints_failed"] = bp_result["failed"]
+        return result
     else:
         target.reset()
         return {"status": "running", "reset": True}

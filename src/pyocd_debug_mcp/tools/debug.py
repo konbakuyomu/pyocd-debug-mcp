@@ -7,8 +7,10 @@ Based on Cortex-M debug techniques from user's Obsidian notes.
 
 from __future__ import annotations
 
+import struct
 import time
 import logging
+from pathlib import Path
 from typing import Optional
 
 from pyocd.core.target import Target
@@ -386,3 +388,346 @@ def list_supported_targets(filter_text: str = "") -> dict:
         "by_vendor": {k: {"count": len(v), "targets": v} for k, v in sorted(groups.items())},
         "note": "Additional targets available via CMSIS-Pack: pyocd pack find <keyword>",
     }
+
+
+# ─── Stack Backtrace ──────────────────────────────────────────────────────────
+
+
+def _get_flash_range(target) -> tuple[int, int]:
+    """Get Flash address range from target memory map.
+
+    Falls back to a generous Cortex-M default (0-512MB) if no Flash region found.
+    """
+    try:
+        from pyocd.core.memory_map import MemoryType
+
+        for region in target.memory_map:
+            if region.type == MemoryType.FLASH:
+                return (region.start, region.start + region.length)
+    except Exception:
+        pass
+    # Default: 0x00000000 - 0x20000000 (Flash is below SRAM on most Cortex-M)
+    return (0x00000000, 0x20000000)
+
+
+def _is_bl_instruction(hw1: int, hw2: int) -> bool:
+    """Check if a Thumb-2 instruction pair is BL or BLX.
+
+    BL  T1: hw1[15:11]=11110, hw2[15:14]=11, hw2[12]=1
+    BLX T2: hw1[15:11]=11110, hw2[15:14]=11, hw2[12]=0
+    """
+    if (hw1 & 0xF800) != 0xF000:
+        return False
+    return (hw2 & 0xC000) == 0xC000
+
+
+def _validate_return_address(target, addr: int, flash_start: int, flash_end: int) -> bool:
+    """Validate that addr-2/addr-4 contains a BL/BLX instruction.
+
+    A return address on the stack should point to the instruction AFTER a BL.
+    So we read the 4 bytes immediately before addr and check for BL/BLX.
+    """
+    check_addr = (addr & ~1) - 4
+    if check_addr < flash_start:
+        return False
+    try:
+        instr_word = target.read32(check_addr)
+        hw1 = instr_word & 0xFFFF
+        hw2 = (instr_word >> 16) & 0xFFFF
+        return _is_bl_instruction(hw1, hw2)
+    except Exception:
+        return False
+
+
+def _build_function_map(elf_path: str) -> dict[int, int] | None:
+    """Build function address map from ELF debug sections.
+
+    Parses FDE entries from .debug_frame (works with armcc/AC5 custom format)
+    and/or .ARM.exidx entries to map function_start → function_end.
+
+    Returns dict mapping start_address → end_address, or None.
+    """
+    func_map: dict[int, int] = {}
+    try:
+        from elftools.elf.elffile import ELFFile
+
+        with open(elf_path, "rb") as f:
+            elf = ELFFile(f)
+
+            # Try .debug_frame (works for ALL toolchains, including armcc)
+            debug_frame = elf.get_section_by_name(".debug_frame")
+            if debug_frame is not None:
+                _parse_debug_frame_fde(debug_frame.data(), func_map)
+
+            # Try .ARM.exidx (available in AC6/GCC builds)
+            for section in elf.iter_sections():
+                if section.name == ".ARM.exidx" or section.header.sh_type == "SHT_ARM_EXIDX":
+                    _parse_arm_exidx(section, elf, func_map)
+                    break
+    except Exception as e:
+        logger.debug("Failed to build function map: %s", e)
+        return None
+
+    return func_map if func_map else None
+
+
+def _parse_debug_frame_fde(data: bytes, func_map: dict[int, int]) -> None:
+    """Parse FDE entries from raw .debug_frame section data.
+
+    Handles armcc's custom 'armcc+' augmentation by manual binary parsing.
+    Only extracts initial_location and address_range (function boundaries),
+    skipping CFA unwind instructions.
+    """
+    offset = 0
+    size = len(data)
+
+    while offset < size - 4:
+        # Read entry length
+        length = struct.unpack_from("<I", data, offset)[0]
+        if length == 0:
+            break
+        if length == 0xFFFFFFFF:
+            # 64-bit DWARF (extremely rare on Cortex-M)
+            if offset + 12 > size:
+                break
+            length = struct.unpack_from("<Q", data, offset + 4)[0]
+            entry_start = offset + 12
+        else:
+            entry_start = offset + 4
+
+        if entry_start + 4 > size:
+            break
+
+        # CIE_id (0xFFFFFFFF for CIE, else offset to CIE for FDE)
+        cie_id = struct.unpack_from("<I", data, entry_start)[0]
+
+        if cie_id != 0xFFFFFFFF:
+            # This is an FDE — extract function range
+            if entry_start + 12 <= size:
+                init_loc = struct.unpack_from("<I", data, entry_start + 4)[0]
+                addr_range = struct.unpack_from("<I", data, entry_start + 8)[0]
+                if init_loc > 0 and addr_range > 0:
+                    func_map[init_loc] = init_loc + addr_range
+
+        # Move to next entry
+        if length == 0xFFFFFFFF:
+            offset = entry_start + struct.unpack_from("<Q", data, offset + 4)[0]
+        else:
+            offset = entry_start + length
+
+
+def _parse_arm_exidx(exidx_section, elf, func_map: dict[int, int]) -> None:
+    """Parse .ARM.exidx section for function address ranges.
+
+    Each entry is 8 bytes: [prel31_offset_to_function, unwind_info].
+    We only extract the function addresses, not the full unwind info.
+    """
+    data = exidx_section.data()
+    section_addr = exidx_section.header.sh_addr
+    num_entries = len(data) // 8
+
+    for i in range(num_entries):
+        word0 = struct.unpack_from("<I", data, i * 8)[0]
+        # prel31 offset (bit31 is used as special flag, mask it)
+        offset_val = word0 & 0x7FFFFFFF
+        if offset_val & 0x40000000:
+            offset_val |= 0x80000000  # Sign extend
+            offset_val = offset_val - 0x100000000
+
+        func_addr = (section_addr + i * 8 + offset_val) & 0xFFFFFFFF
+
+        # Determine end: next entry's start or section end
+        if i + 1 < num_entries:
+            next_word0 = struct.unpack_from("<I", data, (i + 1) * 8)[0]
+            next_offset = next_word0 & 0x7FFFFFFF
+            if next_offset & 0x40000000:
+                next_offset |= 0x80000000
+                next_offset = next_offset - 0x100000000
+            next_func = (section_addr + (i + 1) * 8 + next_offset) & 0xFFFFFFFF
+            func_map[func_addr] = next_func
+        else:
+            # Last entry — estimate end as func_addr + reasonable max
+            func_map[func_addr] = func_addr + 0x1000
+
+
+def _resolve_frame_symbol(target, addr: int) -> dict:
+    """Resolve a single address to symbol info."""
+    result = {"address": f"0x{addr:08X}"}
+    try:
+        elf_file = target.elf
+        if elf_file is not None:
+            sym = elf_file.symbol_decoder.get_symbol_for_address(addr)
+            if sym:
+                offset = addr - sym.address
+                result["symbol"] = sym.name
+                result["offset"] = f"+0x{offset:X}" if offset else ""
+                result["display"] = f"{sym.name}+0x{offset:X}" if offset else sym.name
+                return result
+    except Exception:
+        pass
+    result["symbol"] = None
+    result["display"] = f"0x{addr:08X}"
+    return result
+
+
+def backtrace(scan_depth: int = 512, max_frames: int = 16) -> dict:
+    """Perform stack backtrace using heuristic scanning with BL validation.
+
+    Three-tier accuracy:
+    1. If ELF attached with .debug_frame/.ARM.exidx → FDE-enhanced scan
+       (function boundary validation eliminates most false positives)
+    2. BL/BLX instruction validation at candidate return addresses
+    3. Flash range + Thumb bit filtering
+
+    Args:
+        scan_depth: Bytes to scan from SP upward (default 512).
+        max_frames: Maximum frames to return (default 16).
+
+    Returns:
+        Dict with frames list, each containing address, symbol, depth, and type.
+    """
+    target = session_mgr.target
+
+    state = target.get_state()
+    if state != Target.State.HALTED:
+        raise RuntimeError("Target must be halted for backtrace. Call halt first.")
+
+    pc = target.read_core_register("pc")
+    lr = target.read_core_register("lr")
+    sp = target.read_core_register("sp")
+    xpsr = target.read_core_register("xpsr")
+
+    flash_start, flash_end = _get_flash_range(target)
+
+    # Build function map from ELF if available
+    func_map = None
+    method = "heuristic"
+    info = session_mgr.info
+    if info and info.elf_path:
+        func_map = _build_function_map(info.elf_path)
+        if func_map:
+            method = "fde_enhanced_heuristic"
+            logger.debug("Function map: %d entries", len(func_map))
+
+    frames = []
+    seen_addresses: set[int] = set()
+
+    # Frame 0: current PC
+    f0 = _resolve_frame_symbol(target, pc)
+    f0.update({"depth": 0, "type": "current_pc"})
+    frames.append(f0)
+    seen_addresses.add(pc)
+
+    # Frame 1: LR (if valid return address, not EXC_RETURN)
+    is_exc_return = (lr & 0xFFFFFF00) == 0xFFFFFF00
+    if not is_exc_return:
+        lr_addr = lr & ~1
+        if flash_start <= lr_addr < flash_end and lr_addr not in seen_addresses:
+            f1 = _resolve_frame_symbol(target, lr_addr)
+            f1.update({"depth": 1, "type": "lr_register"})
+            frames.append(f1)
+            seen_addresses.add(lr_addr)
+
+    # Stack scanning: read stack words and validate as return addresses
+    num_words = scan_depth // 4
+    try:
+        stack_data = target.read_memory_block32(sp, num_words)
+    except Exception as e:
+        return {
+            "frames": frames,
+            "total_frames": len(frames),
+            "method": method,
+            "scan_depth": scan_depth,
+            "error": f"Stack read failed at SP=0x{sp:08X}: {e}",
+            "registers": {
+                "pc": f"0x{pc:08X}",
+                "lr": f"0x{lr:08X}",
+                "sp": f"0x{sp:08X}",
+            },
+        }
+
+    for i, word in enumerate(stack_data):
+        if len(frames) >= max_frames:
+            break
+
+        # Filter 1: Must have Thumb bit set (bit0=1)
+        if not (word & 1):
+            continue
+
+        addr = word & ~1  # Clear Thumb bit for address
+
+        # Filter 2: Must be in Flash range
+        if not (flash_start <= addr < flash_end):
+            continue
+
+        # Filter 3: Skip already-seen addresses (LR duplicate, etc.)
+        if addr in seen_addresses:
+            continue
+
+        # Filter 4: BL/BLX instruction validation
+        if not _validate_return_address(target, addr, flash_start, flash_end):
+            continue
+
+        # Filter 5 (optional): Function map validation
+        if func_map is not None:
+            # The BL call site (addr-4) should be inside a known function
+            call_site = addr - 4
+            in_known_func = False
+            for func_start, func_end in func_map.items():
+                if func_start <= call_site < func_end:
+                    in_known_func = True
+                    break
+            if not in_known_func:
+                continue
+
+        seen_addresses.add(addr)
+        frame = _resolve_frame_symbol(target, addr)
+        frame.update({
+            "depth": len(frames),
+            "type": "stack_scan",
+            "stack_offset": f"SP+0x{i * 4:X}",
+        })
+        frames.append(frame)
+
+    # Determine if in exception context
+    in_exception = (xpsr & 0x1FF) != 0
+    exc_info = None
+    if in_exception:
+        exc_num = xpsr & 0x1FF
+        exc_info = {
+            "in_exception": True,
+            "exception_number": exc_num,
+            "exception_name": _exception_name(exc_num),
+        }
+
+    result = {
+        "frames": frames,
+        "total_frames": len(frames),
+        "method": method,
+        "scan_depth": scan_depth,
+        "registers": {
+            "pc": f"0x{pc:08X}",
+            "lr": f"0x{lr:08X}",
+            "sp": f"0x{sp:08X}",
+        },
+    }
+    if func_map:
+        result["function_map_entries"] = len(func_map)
+    if exc_info:
+        result["exception_context"] = exc_info
+
+    return result
+
+
+def compact_backtrace(max_frames: int = 4) -> list[str]:
+    """Return a compact backtrace as a list of display strings.
+
+    Designed for embedding in wait_halt and fault_analyze results.
+    Returns e.g. ["main+0x1A", "SystemInit", "0x000003FC"].
+    Silently returns empty list on any error.
+    """
+    try:
+        bt = backtrace(scan_depth=256, max_frames=max_frames)
+        return [f.get("display", f"0x{f.get('address', '?')}") for f in bt.get("frames", [])]
+    except Exception:
+        return []

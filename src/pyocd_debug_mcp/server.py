@@ -716,7 +716,8 @@ async def tool_watchpoint_list() -> str:
         "triggered, or manual halt). This is the KEY tool for 'set breakpoint → run → "
         "wait for hit → inspect' debugging workflow. Returns halt reason, PC, and "
         "registers when the target stops. Sends progress notifications to prevent "
-        "AI client timeouts during long waits."
+        "AI client timeouts during long waits. Automatically includes a compact "
+        "backtrace (top 4 frames) showing the call chain when halted."
     ),
 )
 async def tool_target_wait_halt(
@@ -784,6 +785,14 @@ async def tool_target_wait_halt(
                 except Exception:
                     pass
 
+                # Auto-include compact backtrace (top 4 frames)
+                try:
+                    bt = await asyncio.to_thread(debug_tools.compact_backtrace, 4)
+                    if bt:
+                        result["backtrace"] = bt
+                except Exception:
+                    pass
+
                 return _json(result)
 
             elapsed = time.monotonic() - start
@@ -821,7 +830,15 @@ async def tool_target_wait_halt(
 )
 async def tool_debug_fault_analyze() -> str:
     try:
-        return _json(debug_tools.fault_analyze())
+        result = debug_tools.fault_analyze()
+        # Auto-include backtrace for crash analysis
+        try:
+            bt = debug_tools.compact_backtrace(8)
+            if bt:
+                result["backtrace"] = bt
+        except Exception:
+            pass
+        return _json(result)
     except Exception as e:
         return _error(str(e))
 
@@ -943,6 +960,33 @@ async def tool_target_list_supported(
 ) -> str:
     try:
         return _json(debug_tools.list_supported_targets(filter_text=filter_text))
+    except Exception as e:
+        return _error(str(e))
+
+
+# ─── Backtrace Tool ──────────────────────────────────────────────────────────
+
+
+@mcp.tool(
+    name="pyocd_debug_backtrace",
+    description=(
+        "Perform stack backtrace to show the full call chain. Uses heuristic "
+        "stack scanning with BL/BLX instruction validation. When ELF is attached, "
+        "enhances accuracy using .debug_frame/.ARM.exidx function boundary data. "
+        "Returns ordered frames: depth 0 = current PC, deeper = callers. "
+        "Essential for understanding HOW code reached the current point."
+    ),
+)
+async def tool_debug_backtrace(
+    scan_depth: Annotated[int, "Bytes to scan from SP upward (default 512)"] = 512,
+    max_frames: Annotated[int, "Maximum frames to return (default 16)"] = 16,
+) -> str:
+    try:
+        return _json(await asyncio.to_thread(
+            debug_tools.backtrace,
+            scan_depth=scan_depth,
+            max_frames=max_frames,
+        ))
     except Exception as e:
         return _error(str(e))
 

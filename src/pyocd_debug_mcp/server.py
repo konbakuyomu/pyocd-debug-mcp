@@ -131,10 +131,31 @@ async def tool_session_connect(
     name="pyocd_session_disconnect",
     description="Close the current debug session and release the probe.",
 )
-async def tool_session_disconnect() -> str:
+async def tool_session_disconnect(
+    resume_on_disconnect: Annotated[
+        bool,
+        "If True (default), clear all breakpoints/watchpoints and resume "
+        "the target before closing. Set False to leave target halted "
+        "(e.g., for later reconnection). AI MUST consider: will the user "
+        "need the MCU running after this session ends?"
+    ] = True,
+) -> str:
     try:
-        session_mgr.disconnect()
-        return _json({"status": "disconnected"})
+        result = session_mgr.disconnect(
+            resume_on_disconnect=resume_on_disconnect,
+        )
+        if resume_on_disconnect:
+            result["note"] = (
+                "Target resumed and session closed. MCU is running normally. "
+                "All breakpoints and watchpoints have been cleared."
+            )
+        else:
+            result["note"] = (
+                "Session closed but target may still be halted. "
+                "MCU will NOT respond to external input until manually "
+                "resumed or power-cycled."
+            )
+        return _json(result)
     except Exception as e:
         return _error(f"Disconnect failed: {e}")
 
@@ -1523,7 +1544,16 @@ async def pyocd_svd_attach_builtin(
 
 # ─── Main entry point ────────────────────────────────────────────────────────
 
+def _graceful_disconnect():
+    """Resume target + disconnect, used by all shutdown paths."""
+    try:
+        session_mgr.disconnect(resume_on_disconnect=True)
+    except Exception:
+        pass
+
+
 def main():
+    import atexit
     import signal
     import os
     import threading
@@ -1535,14 +1565,13 @@ def main():
         stream=sys.stderr,
     )
 
+    # atexit safety net — always try to resume target on process exit
+    atexit.register(_graceful_disconnect)
+
     # Signal handling (main thread only)
     if threading.current_thread() is threading.main_thread():
         def handle_shutdown(signum, frame):
-            # Clean up pyocd session before exit
-            try:
-                session_mgr.disconnect()
-            except Exception:
-                pass
+            _graceful_disconnect()
             os._exit(0)
 
         signal.signal(signal.SIGINT, handle_shutdown)
@@ -1571,10 +1600,7 @@ def main():
         def monitor_parent():
             while True:
                 if not is_parent_alive(parent_pid):
-                    try:
-                        session_mgr.disconnect()
-                    except Exception:
-                        pass
+                    _graceful_disconnect()
                     os._exit(0)
                 time.sleep(2)
 
@@ -1585,10 +1611,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            session_mgr.disconnect()
-        except Exception:
-            pass
+        _graceful_disconnect()
         os._exit(0)
 
 

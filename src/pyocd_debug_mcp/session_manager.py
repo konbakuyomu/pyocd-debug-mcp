@@ -143,24 +143,105 @@ class SessionManager:
             self._info = None
             raise
 
-    def disconnect(self) -> None:
-        """Close the current debug session and release the probe."""
+    def disconnect(self, *, resume_on_disconnect: bool = True) -> dict:
+        """Close the current debug session and release the probe.
+
+        Args:
+            resume_on_disconnect: If True (default), clear all breakpoints/
+                watchpoints and resume the target before closing, so the MCU
+                continues normal operation after the debug session ends.
+
+        Returns:
+            A dict describing what cleanup actions were taken.
+        """
         if self._session is None:
-            return
+            return {"status": "no_session"}
+
+        actions: list[str] = []
+        target_state = "unknown"
+
+        if resume_on_disconnect:
+            try:
+                tgt = self._session.target
+                # Clear hardware breakpoints
+                try:
+                    tgt.clear_breakpoint(None)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+                from .tools.breakpoint import _active_breakpoints
+                bp_count = len(_active_breakpoints)
+                for addr in list(_active_breakpoints):
+                    try:
+                        bp_info = _active_breakpoints[addr]
+                        tgt.remove_breakpoint(addr)
+                    except Exception:
+                        pass
+                _active_breakpoints.clear()
+                if bp_count:
+                    actions.append(f"cleared {bp_count} breakpoint(s)")
+
+                # Clear watchpoints
+                from .tools.watchpoint import _active_watchpoints
+                wp_count = len(_active_watchpoints)
+                for addr in list(_active_watchpoints):
+                    try:
+                        wp_info = _active_watchpoints[addr]
+                        tgt.remove_watchpoint(
+                            addr,
+                            wp_info.get("size", 4),
+                            Target.WatchpointType[wp_info.get(
+                                "access_type", "WRITE"
+                            ).upper()],
+                        )
+                    except Exception:
+                        pass
+                _active_watchpoints.clear()
+                if wp_count:
+                    actions.append(f"cleared {wp_count} watchpoint(s)")
+
+                # Resume target so MCU runs normally
+                try:
+                    state = tgt.get_state()
+                    if state == Target.State.HALTED:
+                        tgt.resume()
+                        actions.append("target resumed")
+                        target_state = "running"
+                    else:
+                        target_state = str(state).split(".")[-1].lower()
+                except Exception as e:
+                    actions.append(f"resume failed: {e}")
+                    target_state = "unknown"
+            except Exception as e:
+                actions.append(f"cleanup error: {e}")
+        else:
+            actions.append("target left in current state (resume_on_disconnect=False)")
+            try:
+                tgt = self._session.target
+                state = tgt.get_state()
+                target_state = str(state).split(".")[-1].lower()
+            except Exception:
+                target_state = "unknown"
 
         try:
             self._session.close()
+            actions.append("session closed")
         except Exception as e:
             logger.warning("Error closing session: %s", e)
+            actions.append(f"session close error: {e}")
         finally:
             self._session = None
             self._info = None
             self._elf_provider = None
             self._svd_device = None
             self._breakpoint_registry.clear()
-            # Clean up module-level tracking state
             self._cleanup_tool_state()
             logger.info("Session disconnected.")
+
+        return {
+            "status": "disconnected",
+            "target_state": target_state,
+            "actions": actions,
+        }
 
     @staticmethod
     def _cleanup_tool_state() -> None:

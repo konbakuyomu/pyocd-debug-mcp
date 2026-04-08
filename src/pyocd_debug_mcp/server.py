@@ -854,6 +854,9 @@ async def tool_target_wait_halt(
         if resume_first:
             state = await asyncio.to_thread(_target.get_state)
             if state == Target.State.HALTED:
+                # Skip past breakpoint at current PC to avoid immediate re-trigger
+                from .tools.target import _skip_breakpoint_at_pc
+                await asyncio.to_thread(_skip_breakpoint_at_pc, _target)
                 await asyncio.to_thread(_target.resume)
 
         start = time.monotonic()
@@ -1255,7 +1258,9 @@ async def tool_target_step_out(
             return _error(f"Failed to set temp breakpoint at 0x{bp_addr:08X}")
 
         try:
-            # Resume and wait
+            # Resume and wait — skip past breakpoint at current PC first
+            from .tools.target import _skip_breakpoint_at_pc
+            await asyncio.to_thread(_skip_breakpoint_at_pc, _target)
             await asyncio.to_thread(_target.resume)
             start = time.monotonic()
             poll_interval = 0.05

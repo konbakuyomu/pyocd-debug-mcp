@@ -18,6 +18,30 @@ def _state_str(state: Target.State) -> str:
     }.get(state, str(state))
 
 
+def _skip_breakpoint_at_pc(target) -> bool:
+    """If PC is sitting on an active breakpoint, single-step past it.
+
+    This prevents the classic "resume immediately re-triggers the same
+    breakpoint" problem.  Returns True if a step was performed.
+    """
+    from .breakpoint import _active_breakpoints
+
+    pc = target.read_core_register("pc")
+    if pc in _active_breakpoints:
+        # Temporarily remove BP, step one instruction, re-arm BP
+        bp_info = _active_breakpoints[pc]
+        bp_type_str = bp_info.get("type", "hw")
+
+        from .breakpoint import _BP_TYPE_MAP
+        pyocd_type = _BP_TYPE_MAP.get(bp_type_str, Target.BreakpointType.HW)
+
+        target.remove_breakpoint(pc)
+        target.step()
+        target.set_breakpoint(pc, pyocd_type)
+        return True
+    return False
+
+
 def halt() -> dict:
     """Halt the target CPU immediately."""
     target = session_mgr.target
@@ -38,10 +62,18 @@ def step(count: int = 1) -> dict:
 
 
 def resume() -> dict:
-    """Resume target execution."""
+    """Resume target execution.
+
+    Automatically steps past breakpoint at current PC to avoid
+    immediate re-trigger.
+    """
     target = session_mgr.target
+    skipped = _skip_breakpoint_at_pc(target)
     target.resume()
-    return {"status": "running"}
+    result: dict = {"status": "running"}
+    if skipped:
+        result["breakpoint_skipped"] = True
+    return result
 
 
 def reset(halt_after: bool = True) -> dict:

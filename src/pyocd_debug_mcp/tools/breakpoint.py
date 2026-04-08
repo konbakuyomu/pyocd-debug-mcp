@@ -59,17 +59,10 @@ def set_breakpoint(
     if success is False:
         raise RuntimeError(f"Failed to set breakpoint at 0x{bp_addr:08X} (no HW slots?)")
 
-    # Determine actual type used
-    actual_type = bp_type_lower
-    if bp_type_lower == "auto":
-        # pyOCD auto mode: check if it ended up as HW or SW
-        # We can't directly query, so report "auto"
-        actual_type = "auto"
-
     _active_breakpoints[bp_addr] = {
         "address": f"0x{bp_addr:08X}",
         "symbol": symbol,
-        "type": actual_type,
+        "type": bp_type_lower,
     }
 
     # Register in session manager for reset restore
@@ -79,7 +72,7 @@ def set_breakpoint(
         "status": "set",
         "address": f"0x{bp_addr:08X}",
         "symbol": symbol,
-        "type": actual_type,
+        "type": bp_type_lower,
         "total_breakpoints": len(_active_breakpoints),
     }
 

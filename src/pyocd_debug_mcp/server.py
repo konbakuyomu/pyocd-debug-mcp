@@ -169,12 +169,12 @@ async def tool_session_status() -> str:
     description=(
         "Program a firmware file (.hex/.bin/.elf) to the target flash. "
         "For armclang-compiled firmware, prefer .hex format to avoid ELF compatibility issues. "
-        "When programming a .elf file, automatically attaches it for symbol resolution. "
+        "When programming a .elf or .axf file, automatically attaches it for symbol resolution. "
         "Sends progress notifications to prevent AI client timeouts during programming."
     ),
 )
 async def tool_flash_program(
-    file_path: Annotated[str, "Absolute path to firmware file (.hex, .bin, or .elf)"],
+    file_path: Annotated[str, "Absolute path to firmware file (.hex, .bin, .elf, or .axf)"],
     erase: Annotated[bool, "Erase flash before programming (default True)"] = True,
     ctx: Context = None,
 ) -> str:
@@ -186,8 +186,8 @@ async def tool_flash_program(
         if not path.exists():
             return _error(f"Firmware file not found: {file_path}")
         suffix = path.suffix.lower()
-        if suffix not in (".hex", ".bin", ".elf"):
-            return _error(f"Unsupported format: {suffix}. Use .hex, .bin, or .elf")
+        if suffix not in (".hex", ".bin", ".elf", ".axf"):
+            return _error(f"Unsupported format: {suffix}. Use .hex, .bin, .elf, or .axf")
 
         last_pct = [0]
 
@@ -221,7 +221,7 @@ async def tool_flash_program(
         }
 
         # Auto-attach ELF for symbol resolution
-        if suffix == ".elf":
+        if suffix in (".elf", ".axf"):
             try:
                 session_mgr.attach_elf(str(path))
                 result["elf_auto_attached"] = True
@@ -278,13 +278,13 @@ async def tool_flash_erase(
     name="pyocd_flash_verify",
     description=(
         "Verify the target's Flash content matches a firmware file. "
-        "Reads Flash and compares segment by segment. Supports .hex, .bin, and .elf formats. "
+        "Reads Flash and compares segment by segment. Supports .hex, .bin, .elf, and .axf formats. "
         "Returns verified:true if match, or first mismatch address if different. "
         "Sends progress notifications to prevent AI client timeouts during verification."
     ),
 )
 async def tool_flash_verify(
-    file_path: Annotated[str, "Absolute path to firmware file (.hex, .bin, or .elf)"],
+    file_path: Annotated[str, "Absolute path to firmware file (.hex, .bin, .elf, or .axf)"],
     base_address: Annotated[Optional[int | str], "Base address for .bin files (default: 0x00000000). Ignored for .hex/.elf"] = None,
     ctx: Context = None,
 ) -> str:

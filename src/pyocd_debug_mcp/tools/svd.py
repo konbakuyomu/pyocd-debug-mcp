@@ -453,7 +453,7 @@ def describe(peripheral_name: str, register_name: str | None = None) -> dict:
                         "description": (ev.description or "").strip(),
                     }
                     for ev in f.enumerated_values
-                    if ev.name is not None
+                    if ev.name is not None and ev.value is not None
                 ]
             reg_fields.append(finfo)
     except AttributeError:

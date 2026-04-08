@@ -335,7 +335,7 @@ class SessionManager:
 
         suffix = path.suffix.lower()
         if suffix not in (".hex", ".bin", ".elf", ".axf"):
-            raise ValueError(f"Unsupported firmware format: {suffix}. Use .hex, .bin, or .elf")
+            raise ValueError(f"Unsupported firmware format: {suffix}. Use .hex, .bin, .elf, or .axf")
 
         programmer = FileProgrammer(self.session)
         programmer.program(str(path), erase=erase)

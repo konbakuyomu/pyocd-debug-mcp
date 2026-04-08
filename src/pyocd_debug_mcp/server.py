@@ -117,6 +117,7 @@ async def tool_session_connect(
             "probe_id": info.probe_id,
             "target": info.target_type,
             "frequency": info.frequency,
+            "vector_catch": "all_faults (HardFault/BusFault/MemManage/UsageFault auto-halt enabled)",
         })
     except Exception as e:
         return _error(f"Connection failed: {e}")

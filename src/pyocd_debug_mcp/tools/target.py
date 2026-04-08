@@ -49,6 +49,8 @@ def reset(halt_after: bool = True) -> dict:
     target = session_mgr.target
     if halt_after:
         target.reset_and_halt()
+        # Re-enable fault vector catches (reset_and_halt may modify DEMCR)
+        session_mgr._enable_fault_vector_catch()
         pc = target.read_core_register("pc")
         return {"status": "halted", "reset": True, "pc": f"0x{pc:08X}"}
     else:

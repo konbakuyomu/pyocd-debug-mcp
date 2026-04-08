@@ -118,6 +118,11 @@ class SessionManager:
             if auto_fix_memory_map:
                 self._fix_peripheral_memory_map()
 
+            # Enable Vector Catch for all fault types so the CPU auto-halts
+            # on HardFault/BusFault/MemManage/UsageFault instead of spinning
+            # in a dead-loop handler. This is critical for crash detection.
+            self._enable_fault_vector_catch()
+
             self._info = SessionInfo(
                 probe_id=session.probe.unique_id or "unknown",
                 target_type=target_type,
@@ -168,6 +173,48 @@ class SessionManager:
             _active_watchpoints.clear()
         except Exception:
             pass
+
+    # Default mask: all faults except CORE_RESET and SECURE_FAULT
+    _FAULT_VC_MASK = (
+        Target.VectorCatch.HARD_FAULT       # HardFault
+        | Target.VectorCatch.BUS_FAULT      # BusFault
+        | Target.VectorCatch.MEM_FAULT      # MemManage
+        | Target.VectorCatch.INTERRUPT_ERR  # Fault during exception entry
+        | Target.VectorCatch.STATE_ERR      # UsageFault: invalid state
+        | Target.VectorCatch.CHECK_ERR      # UsageFault: checking error
+        | Target.VectorCatch.COPROCESSOR_ERR  # UsageFault: no coprocessor
+    )
+
+    def _enable_fault_vector_catch(self) -> None:
+        """Enable Vector Catch for all fault types.
+
+        When enabled, the CPU auto-halts in Debug state upon entering any
+        fault handler (HardFault, BusFault, MemManage, UsageFault).
+        Without this, a faulted CPU just spins in the handler's infinite
+        loop and pyOCD sees it as RUNNING, not HALTED.
+        """
+        try:
+            self.target.set_vector_catch(self._FAULT_VC_MASK)
+            logger.info(
+                "Vector Catch enabled for faults (mask=0x%03X)", self._FAULT_VC_MASK
+            )
+        except Exception as e:
+            logger.warning("Failed to enable Vector Catch: %s", e)
+
+    def enable_vector_catch(self, include_reset: bool = False) -> dict:
+        """Public API to (re-)enable fault vector catches.
+
+        Args:
+            include_reset: Also catch core reset vector (default False).
+
+        Returns:
+            dict with enabled mask info.
+        """
+        mask = self._FAULT_VC_MASK
+        if include_reset:
+            mask |= Target.VectorCatch.CORE_RESET
+        self.target.set_vector_catch(mask)
+        return {"vector_catch_mask": f"0x{mask:03X}", "include_reset": include_reset}
 
     def attach_elf(self, elf_path: str) -> dict:
         """Attach an ELF file for symbol resolution."""

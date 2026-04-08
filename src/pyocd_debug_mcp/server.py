@@ -55,6 +55,15 @@ def _error(msg: str) -> str:
     return _json({"error": msg})
 
 
+def _parse_addr(value: int | str | None) -> int | None:
+    """Accept address as int, hex string ('0x1FFE000E'), or None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return int(value, 0)
+    return int(value)
+
+
 # ─── Probe tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool(
@@ -360,10 +369,11 @@ async def tool_register_read_all(
     description="Read memory at a given address. Returns hex value.",
 )
 async def tool_memory_read(
-    address: Annotated[int, "Memory address (integer, e.g. 0x20000000)"],
+    address: Annotated[int | str, "Memory address (integer or hex string, e.g. 0x20000000)"],
     size: Annotated[int, "Bytes to read: 1, 2, 4 for single access, or any number for block read"] = 4,
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(memory.read_memory(address, size))
     except Exception as e:
         return _error(f"Memory read failed at 0x{address:08X}: {e}")
@@ -374,11 +384,12 @@ async def tool_memory_read(
     description="Write a value to memory at a given address.",
 )
 async def tool_memory_write(
-    address: Annotated[int, "Memory address (integer)"],
+    address: Annotated[int | str, "Memory address (integer or hex string)"],
     value: Annotated[int, "Value to write (integer)"],
     size: Annotated[int, "Access size in bytes: 1, 2, or 4"] = 4,
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(memory.write_memory(address, value, size))
     except Exception as e:
         return _error(f"Memory write failed at 0x{address:08X}: {e}")
@@ -389,10 +400,11 @@ async def tool_memory_write(
     description="Write a block of bytes to memory.",
 )
 async def tool_memory_write_block(
-    address: Annotated[int, "Start address"],
+    address: Annotated[int | str, "Start address (integer or hex string)"],
     data: Annotated[list[int], "List of byte values (0-255)"],
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(memory.write_memory_block(address, data))
     except Exception as e:
         return _error(f"Block write failed at 0x{address:08X}: {e}")
@@ -403,10 +415,11 @@ async def tool_memory_write_block(
     description="Dump memory in hex dump format (address, hex bytes, ASCII). Useful for inspecting data structures.",
 )
 async def tool_memory_dump(
-    address: Annotated[int, "Start address"],
+    address: Annotated[int | str, "Start address (integer or hex string)"],
     length: Annotated[int, "Number of bytes to dump (default 256)"] = 256,
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(memory.dump_memory(address, length))
     except Exception as e:
         return _error(f"Memory dump failed at 0x{address:08X}: {e}")
@@ -419,13 +432,13 @@ async def tool_memory_dump(
     description="Set a hardware breakpoint at an address or symbol name (requires ELF).",
 )
 async def tool_breakpoint_set(
-    address: Annotated[Optional[int], "Breakpoint address (integer)"] = None,
+    address: Annotated[Optional[int | str], "Breakpoint address (integer or hex string)"] = None,
     symbol: Annotated[Optional[str], "Function/symbol name (requires ELF attached)"] = None,
 ) -> str:
     if address is None and symbol is None:
         return _error("Must specify 'address' or 'symbol'.")
     try:
-        return _json(bp_tools.set_breakpoint(address=address, symbol=symbol))
+        return _json(bp_tools.set_breakpoint(address=_parse_addr(address), symbol=symbol))
     except Exception as e:
         return _error(str(e))
 
@@ -435,13 +448,13 @@ async def tool_breakpoint_set(
     description="Remove a breakpoint at an address or symbol.",
 )
 async def tool_breakpoint_clear(
-    address: Annotated[Optional[int], "Breakpoint address"] = None,
+    address: Annotated[Optional[int | str], "Breakpoint address (integer or hex string)"] = None,
     symbol: Annotated[Optional[str], "Symbol name"] = None,
 ) -> str:
     if address is None and symbol is None:
         return _error("Must specify 'address' or 'symbol'.")
     try:
-        return _json(bp_tools.clear_breakpoint(address=address, symbol=symbol))
+        return _json(bp_tools.clear_breakpoint(address=_parse_addr(address), symbol=symbol))
     except Exception as e:
         return _error(str(e))
 
@@ -534,9 +547,10 @@ async def tool_elf_info() -> str:
     ),
 )
 async def tool_elf_address_to_symbol(
-    address: Annotated[int, "Memory address to resolve (e.g. from PC, LR, or stack trace)"],
+    address: Annotated[int | str, "Memory address to resolve (e.g. from PC, LR, or stack trace)"],
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(elf.address_to_symbol(address))
     except Exception as e:
         return _error(str(e))
@@ -662,11 +676,12 @@ async def tool_svd_set_field(
     ),
 )
 async def tool_watchpoint_set(
-    address: Annotated[int, "Memory address to watch"],
+    address: Annotated[int | str, "Memory address to watch (integer or hex string)"],
     size: Annotated[int, "Watched region size: 1, 2, or 4 bytes"] = 4,
     access_type: Annotated[str, "'write' (default), 'read', or 'read_write'"] = "write",
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(wp_tools.set_watchpoint(address, size, access_type))
     except Exception as e:
         return _error(str(e))
@@ -677,9 +692,10 @@ async def tool_watchpoint_set(
     description="Remove a watchpoint at the given address.",
 )
 async def tool_watchpoint_clear(
-    address: Annotated[int, "Watchpoint address to clear"],
+    address: Annotated[int | str, "Watchpoint address to clear (integer or hex string)"],
 ) -> str:
     try:
+        address = _parse_addr(address)
         return _json(wp_tools.clear_watchpoint(address))
     except Exception as e:
         return _error(str(e))
@@ -723,12 +739,20 @@ async def tool_watchpoint_list() -> str:
 async def tool_target_wait_halt(
     timeout: Annotated[float, "Max seconds to wait (default 30)"] = 30.0,
     resume_first: Annotated[bool, "Resume target before waiting (default True)"] = True,
+    user_hint: Annotated[
+        Optional[str],
+        "Message to include in progress notifications (e.g. 'Please send serial data now')"
+    ] = None,
     ctx: Context = None,
 ) -> str:
     import time
 
     try:
         _target = session_mgr.target
+
+        # Log user hint to stderr so it appears in MCP transport logs
+        if user_hint:
+            logger.warning("[wait_halt] %s", user_hint)
 
         if resume_first:
             state = await asyncio.to_thread(_target.get_state)
@@ -797,12 +821,15 @@ async def tool_target_wait_halt(
 
             elapsed = time.monotonic() - start
             if elapsed >= timeout:
-                return _json({
+                result = {
                     "status": "timeout",
                     "elapsed_seconds": round(elapsed, 3),
                     "target_state": str(state),
                     "message": f"Target did not halt within {timeout}s",
-                })
+                }
+                if user_hint:
+                    result["user_hint"] = user_hint
+                return _json(result)
 
             # Send progress to prevent AI client timeout
             iteration += 1
@@ -853,13 +880,13 @@ async def tool_debug_fault_analyze() -> str:
     ),
 )
 async def tool_debug_stack_overflow_check(
-    tcb_address: Annotated[Optional[int], "Thread Control Block address (from .map file or symbol)"] = None,
+    tcb_address: Annotated[Optional[int | str], "Thread Control Block address (from .map file or symbol)"] = None,
     stack_addr_offset: Annotated[int, "Offset of stack_addr in TCB (RT-Thread=0x24)"] = 0x24,
     stack_size_offset: Annotated[int, "Offset of stack_size in TCB (RT-Thread=0x28)"] = 0x28,
 ) -> str:
     try:
         return _json(debug_tools.stack_overflow_check(
-            tcb_address=tcb_address,
+            tcb_address=_parse_addr(tcb_address),
             stack_addr_offset=stack_addr_offset,
             stack_size_offset=stack_size_offset,
         ))
@@ -877,7 +904,7 @@ async def tool_debug_stack_overflow_check(
     ),
 )
 async def tool_debug_sample_variable(
-    address: Annotated[int, "Memory address of the variable"],
+    address: Annotated[int | str, "Memory address of the variable (integer or hex string)"],
     size: Annotated[int, "Variable size: 1, 2, or 4 bytes"] = 4,
     interval: Annotated[float, "Seconds between samples (default 0.5)"] = 0.5,
     count: Annotated[int, "Number of samples (default 200)"] = 200,
@@ -887,6 +914,7 @@ async def tool_debug_sample_variable(
     import time
 
     try:
+        address = _parse_addr(address)
         _target = session_mgr.target
         read_fn = {1: _target.read8, 2: _target.read16, 4: _target.read32}.get(size)
         if read_fn is None:
@@ -960,6 +988,185 @@ async def tool_target_list_supported(
 ) -> str:
     try:
         return _json(debug_tools.list_supported_targets(filter_text=filter_text))
+    except Exception as e:
+        return _error(str(e))
+
+
+# ─── Combo / Convenience Tools ───────────────────────────────────────────────
+
+
+@mcp.tool(
+    name="pyocd_read_symbol",
+    description=(
+        "Read a global variable's value by symbol name. Combines ELF symbol lookup "
+        "and memory read in one call. Returns address, raw bytes, and interpreted "
+        "value. For structs/arrays, returns a hex dump."
+    ),
+)
+async def tool_read_symbol(
+    name: Annotated[str, "Symbol/variable name (e.g. 'm_u16RxLen', 'g_stcConfig')"],
+    size: Annotated[
+        Optional[int],
+        "Override read size in bytes. If omitted, uses ELF symbol size (capped at 256)."
+    ] = None,
+) -> str:
+    try:
+        # Step 1: Lookup symbol
+        provider = session_mgr.elf_provider
+        if provider is None:
+            return _error("No ELF file attached. Use pyocd_elf_attach first.")
+
+        addr = provider.get_symbol_value(name)
+        if addr is None:
+            return _error(f"Symbol not found: {name}")
+
+        # Step 2: Determine size from ELF if not specified
+        sym_size = size
+        if sym_size is None:
+            info = session_mgr.info
+            if info and info.elf_path:
+                try:
+                    from elftools.elf.elffile import ELFFile
+                    with open(info.elf_path, "rb") as f:
+                        ef = ELFFile(f)
+                        symtab = ef.get_section_by_name(".symtab")
+                        if symtab:
+                            for sym in symtab.iter_symbols():
+                                if sym.name == name:
+                                    sym_size = sym.entry.st_size
+                                    break
+                except Exception:
+                    pass
+            if not sym_size or sym_size == 0:
+                sym_size = 4  # default to 32-bit
+
+        sym_size = min(sym_size, 256)  # cap to prevent huge reads
+
+        result = {
+            "symbol": name,
+            "address": f"0x{addr:08X}",
+            "size": sym_size,
+        }
+
+        # Step 3: Read memory
+        _target = session_mgr.target
+        if sym_size in (1, 2, 4):
+            read_fn = {1: _target.read8, 2: _target.read16, 4: _target.read32}[sym_size]
+            value = await asyncio.to_thread(read_fn, addr)
+            result["value"] = value
+            result["hex"] = f"0x{value:0{sym_size * 2}X}"
+        else:
+            # Block read for larger types (structs, arrays)
+            data = await asyncio.to_thread(_target.read_memory_block8, addr, sym_size)
+            result["bytes"] = [int(b) for b in data]
+            result["hex_dump"] = " ".join(f"{b:02X}" for b in data)
+
+            # Try to show as string if all printable ASCII
+            try:
+                text = bytes(data).decode("ascii")
+                if text.isprintable():
+                    result["as_string"] = text
+            except Exception:
+                pass
+
+        return _json(result)
+    except Exception as e:
+        return _error(str(e))
+
+
+@mcp.tool(
+    name="pyocd_target_step_out",
+    description=(
+        "Execute until the current function returns (step out). "
+        "Sets a temporary breakpoint at the LR (return address), resumes, "
+        "waits for the breakpoint hit, then cleans up. Returns the new "
+        "position after returning from the function."
+    ),
+)
+async def tool_target_step_out(
+    timeout: Annotated[float, "Max seconds to wait for return (default 10)"] = 10.0,
+) -> str:
+    import time
+
+    try:
+        _target = session_mgr.target
+
+        state = await asyncio.to_thread(_target.get_state)
+        if state != Target.State.HALTED:
+            return _error("Target must be halted first.")
+
+        lr = await asyncio.to_thread(_target.read_core_register, "lr")
+
+        # EXC_RETURN check: if LR is 0xFFFFFFxx, we're in an exception handler
+        if (lr & 0xFFFFFF00) == 0xFFFFFF00:
+            return _error(
+                f"Cannot step out: LR=0x{lr:08X} is an EXC_RETURN value "
+                "(currently in exception/interrupt handler). Use target_resume instead."
+            )
+
+        # Set temp breakpoint at return address (strip Thumb bit for display)
+        bp_addr = lr & ~0x01
+        success = await asyncio.to_thread(_target.set_breakpoint, lr)
+        if success is False:
+            return _error(f"Failed to set temp breakpoint at 0x{bp_addr:08X}")
+
+        try:
+            # Resume and wait
+            await asyncio.to_thread(_target.resume)
+            start = time.monotonic()
+            poll_interval = 0.05
+
+            while True:
+                state = await asyncio.to_thread(_target.get_state)
+                if state == Target.State.HALTED:
+                    pc = await asyncio.to_thread(_target.read_core_register, "pc")
+                    sp = await asyncio.to_thread(_target.read_core_register, "sp")
+                    new_lr = await asyncio.to_thread(_target.read_core_register, "lr")
+                    elapsed = time.monotonic() - start
+
+                    result = {
+                        "status": "returned",
+                        "elapsed_seconds": round(elapsed, 3),
+                        "pc": f"0x{pc:08X}",
+                        "lr": f"0x{new_lr:08X}",
+                        "sp": f"0x{sp:08X}",
+                    }
+
+                    # Resolve symbol
+                    try:
+                        elf_file = session_mgr.target.elf
+                        if elf_file is not None:
+                            sym = elf_file.symbol_decoder.get_symbol_for_address(pc)
+                            if sym:
+                                offset = pc - sym.address
+                                result["symbol"] = (
+                                    f"{sym.name}+0x{offset:X}" if offset else sym.name
+                                )
+                    except Exception:
+                        pass
+
+                    return _json(result)
+
+                elapsed = time.monotonic() - start
+                if elapsed >= timeout:
+                    # Timeout — halt and report
+                    await asyncio.to_thread(_target.halt)
+                    pc = await asyncio.to_thread(_target.read_core_register, "pc")
+                    return _json({
+                        "status": "timeout",
+                        "elapsed_seconds": round(elapsed, 3),
+                        "pc": f"0x{pc:08X}",
+                        "message": f"Function did not return within {timeout}s",
+                    })
+
+                await asyncio.sleep(poll_interval)
+        finally:
+            # Always clean up temp breakpoint
+            try:
+                await asyncio.to_thread(_target.remove_breakpoint, lr)
+            except Exception:
+                pass
+
     except Exception as e:
         return _error(str(e))
 

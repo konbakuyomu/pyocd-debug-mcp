@@ -144,7 +144,9 @@ async def tool_session_disconnect(
         result = session_mgr.disconnect(
             resume_on_disconnect=resume_on_disconnect,
         )
-        if resume_on_disconnect:
+        if result.get("status") == "no_session":
+            result["note"] = "No active session to disconnect."
+        elif resume_on_disconnect:
             result["note"] = (
                 "Target resumed and session closed. MCU is running normally. "
                 "All breakpoints and watchpoints have been cleared."

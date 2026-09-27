@@ -104,14 +104,18 @@ class SessionManager:
             "target_override": target_type,
         }
 
-        kwargs = {"options": options, "return_first": True}
+        # blocking=False: with no probe attached pyOCD would otherwise wait forever for one
+        kwargs = {"options": options, "return_first": True, "blocking": False}
         if probe_id:
             kwargs["unique_id"] = probe_id
 
         try:
             session = ConnectHelper.session_with_chosen_probe(**kwargs)
             if session is None:
-                raise RuntimeError("No debug probe found. Check USB connection.")
+                raise RuntimeError(
+                    "No debug probe found. Check the USB connection, and that no other tool "
+                    "(Keil, EIDE, another pyOCD) is using the probe."
+                )
 
             session.open()
             self._session = session

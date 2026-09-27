@@ -1364,7 +1364,7 @@ svd = [
 [package.metadata]
 requires-dist = [
     { name = "cmsis-svd", marker = "extra == 'svd'", specifier = ">=0.4" },
-    { name = "fastmcp", specifier = ">=2.3.0" },
+    { name = "fastmcp", specifier = ">=3.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.21.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pyelftools", specifier = ">=0.29" },

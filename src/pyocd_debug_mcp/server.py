@@ -8,6 +8,8 @@ ELF symbol resolution, and SVD peripheral register access.
 
 import sys
 import asyncio
+import functools
+import threading
 from pathlib import Path
 
 # Support direct execution: add src dir to path
@@ -59,6 +61,58 @@ def _error(msg: str) -> str:
     return _json({"error": msg})
 
 
+# ─── Probe access ────────────────────────────────────────────────────────────
+#
+# Tools that only call (blocking) pyOCD code are plain functions: FastMCP runs them in
+# worker threads, so a slow or stuck probe never freezes the server, and calls that do
+# not touch the probe (session_status, ELF/SVD lookups ...) keep answering. pyOCD itself
+# is not thread-safe, so every probe operation takes _probe_lock; a call that cannot get
+# the probe within PROBE_WAIT_S reports "busy" instead of queueing forever.
+
+PROBE_WAIT_S = 60.0
+_probe_lock = threading.Lock()
+
+
+class ProbeBusy(RuntimeError):
+    pass
+
+
+def _acquire_probe() -> None:
+    if not _probe_lock.acquire(timeout=PROBE_WAIT_S):
+        raise ProbeBusy(
+            f"Probe busy: another pyOCD operation has been running for over {PROBE_WAIT_S:.0f}s. "
+            "Wait for it, or restart this MCP server if the probe is stuck."
+        )
+
+
+def _exclusive(fn):
+    """Run a synchronous tool while holding the probe."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            _acquire_probe()
+        except ProbeBusy as e:
+            return _error(str(e))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _probe_lock.release()
+    return wrapper
+
+
+def _locked_call(fn, args, kwargs):
+    _acquire_probe()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _probe_lock.release()
+
+
+async def _probe_call(fn, *args, **kwargs):
+    """One probe operation from an async tool: off the event loop, holding the probe."""
+    return await asyncio.to_thread(_locked_call, fn, args, kwargs)
+
+
 def _parse_addr(value: int | str | None) -> int | None:
     """Accept address as int, hex string ('0x1FFE000E'), or None."""
     if value is None:
@@ -74,7 +128,8 @@ def _parse_addr(value: int | str | None) -> int | None:
     name="pyocd_probe_list",
     description="List all connected CMSIS-DAP debug probes. Call this first to discover available probes.",
 )
-async def tool_probe_list() -> str:
+@_exclusive
+def tool_probe_list() -> str:
     try:
         probes = probe.list_probes()
         return _json({"probes": probes, "count": len(probes)})
@@ -86,7 +141,8 @@ async def tool_probe_list() -> str:
     name="pyocd_probe_info",
     description="Get detailed information about a specific debug probe.",
 )
-async def tool_probe_info(
+@_exclusive
+def tool_probe_info(
     unique_id: Annotated[str, "Probe unique ID (or partial match)"],
 ) -> str:
     try:
@@ -105,7 +161,8 @@ async def tool_probe_info(
         "Only one session can be active at a time."
     ),
 )
-async def tool_session_connect(
+@_exclusive
+def tool_session_connect(
     target_type: Annotated[str, "Target MCU type (e.g. 'hc32f460xe', 'hc32f4a0pi')"],
     probe_id: Annotated[Optional[str], "Probe unique ID. Omit to use first available."] = None,
     frequency: Annotated[int, "SWD clock frequency in Hz (default 4MHz)"] = 4_000_000,
@@ -131,7 +188,8 @@ async def tool_session_connect(
     name="pyocd_session_disconnect",
     description="Close the current debug session and release the probe.",
 )
-async def tool_session_disconnect(
+@_exclusive
+def tool_session_disconnect(
     resume_on_disconnect: Annotated[
         bool,
         "If True (default), clear all breakpoints/watchpoints and resume "
@@ -166,7 +224,7 @@ async def tool_session_disconnect(
     name="pyocd_session_status",
     description="Check if a debug session is active and get connection info.",
 )
-async def tool_session_status() -> str:
+def tool_session_status() -> str:
     if not session_mgr.is_connected:
         return _json({"connected": False})
     info = session_mgr.info
@@ -223,7 +281,7 @@ async def tool_flash_program(
             programmer = FileProgrammer(
                 session_mgr.session, progress=progress_cb,
             )
-            await asyncio.to_thread(programmer.program, str(path), erase=erase)
+            await _probe_call(programmer.program, str(path), erase=erase)
 
         task = asyncio.create_task(_do_program())
 
@@ -277,7 +335,7 @@ async def tool_flash_erase(
 
         async def _do_erase():
             eraser = FlashEraser(session_mgr.session, mode)
-            await asyncio.to_thread(eraser.erase)
+            await _probe_call(eraser.erase)
 
         task = asyncio.create_task(_do_erase())
 
@@ -317,7 +375,7 @@ async def tool_flash_verify(
         addr = _parse_addr(base_address)
 
         async def _do_verify():
-            return await asyncio.to_thread(flash.verify, file_path, base_address=addr)
+            return await _probe_call(flash.verify, file_path, base_address=addr)
 
         task = asyncio.create_task(_do_verify())
 
@@ -343,7 +401,8 @@ async def tool_flash_verify(
     name="pyocd_target_halt",
     description="Halt (pause) the target CPU immediately. Returns current PC.",
 )
-async def tool_target_halt() -> str:
+@_exclusive
+def tool_target_halt() -> str:
     try:
         return _json(target.halt())
     except Exception as e:
@@ -354,7 +413,8 @@ async def tool_target_halt() -> str:
     name="pyocd_target_step",
     description="Single-step the target CPU. Target must be halted first.",
 )
-async def tool_target_step(
+@_exclusive
+def tool_target_step(
     count: Annotated[int, "Number of instruction steps (default 1)"] = 1,
 ) -> str:
     try:
@@ -367,7 +427,8 @@ async def tool_target_step(
     name="pyocd_target_resume",
     description="Resume target execution (run until next breakpoint or halt).",
 )
-async def tool_target_resume() -> str:
+@_exclusive
+def tool_target_resume() -> str:
     try:
         return _json(target.resume())
     except Exception as e:
@@ -378,7 +439,8 @@ async def tool_target_resume() -> str:
     name="pyocd_target_reset",
     description="Reset the target MCU. By default resets and halts at the entry point.",
 )
-async def tool_target_reset(
+@_exclusive
+def tool_target_reset(
     halt_after: Annotated[bool, "Halt after reset (default True)"] = True,
 ) -> str:
     try:
@@ -391,7 +453,8 @@ async def tool_target_reset(
     name="pyocd_target_status",
     description="Get current target state (halted/running) and key registers if halted.",
 )
-async def tool_target_status() -> str:
+@_exclusive
+def tool_target_status() -> str:
     try:
         return _json(target.get_status())
     except Exception as e:
@@ -404,7 +467,8 @@ async def tool_target_status() -> str:
     name="pyocd_register_read",
     description="Read a CPU core register by name (e.g. 'pc', 'sp', 'r0', 'xpsr').",
 )
-async def tool_register_read(
+@_exclusive
+def tool_register_read(
     name: Annotated[str, "Register name (e.g. 'pc', 'sp', 'lr', 'r0'-'r12', 'xpsr')"],
 ) -> str:
     try:
@@ -417,7 +481,8 @@ async def tool_register_read(
     name="pyocd_register_write",
     description="Write a value to a CPU core register.",
 )
-async def tool_register_write(
+@_exclusive
+def tool_register_write(
     name: Annotated[str, "Register name"],
     value: Annotated[int, "Value to write (integer)"],
 ) -> str:
@@ -431,7 +496,8 @@ async def tool_register_write(
     name="pyocd_register_read_all",
     description="Read all CPU core registers at once. Useful for getting full CPU state.",
 )
-async def tool_register_read_all(
+@_exclusive
+def tool_register_read_all(
     include_fpu: Annotated[bool, "Include FPU registers (default False)"] = False,
 ) -> str:
     try:
@@ -446,7 +512,8 @@ async def tool_register_read_all(
     name="pyocd_memory_read",
     description="Read memory at a given address. Returns hex value.",
 )
-async def tool_memory_read(
+@_exclusive
+def tool_memory_read(
     address: Annotated[int | str, "Memory address (integer or hex string, e.g. 0x20000000)"],
     size: Annotated[int, "Bytes to read: 1, 2, 4 for single access, or any number for block read"] = 4,
 ) -> str:
@@ -461,7 +528,8 @@ async def tool_memory_read(
     name="pyocd_memory_write",
     description="Write a value to memory at a given address.",
 )
-async def tool_memory_write(
+@_exclusive
+def tool_memory_write(
     address: Annotated[int | str, "Memory address (integer or hex string)"],
     value: Annotated[int, "Value to write (integer)"],
     size: Annotated[int, "Access size in bytes: 1, 2, or 4"] = 4,
@@ -477,7 +545,8 @@ async def tool_memory_write(
     name="pyocd_memory_write_block",
     description="Write a block of bytes to memory.",
 )
-async def tool_memory_write_block(
+@_exclusive
+def tool_memory_write_block(
     address: Annotated[int | str, "Start address (integer or hex string)"],
     data: Annotated[list[int], "List of byte values (0-255)"],
 ) -> str:
@@ -492,7 +561,8 @@ async def tool_memory_write_block(
     name="pyocd_memory_dump",
     description="Dump memory in hex dump format (address, hex bytes, ASCII). Useful for inspecting data structures.",
 )
-async def tool_memory_dump(
+@_exclusive
+def tool_memory_dump(
     address: Annotated[int | str, "Start address (integer or hex string)"],
     length: Annotated[int, "Number of bytes to dump (default 256)"] = 256,
 ) -> str:
@@ -509,7 +579,8 @@ async def tool_memory_dump(
     name="pyocd_breakpoint_set",
     description="Set a hardware breakpoint at an address or symbol name (requires ELF). Supports hw (hardware), sw (software), or auto breakpoint types. Software breakpoints survive across more addresses but are lost on reset; hardware breakpoints are limited in number but don't modify flash.",
 )
-async def tool_breakpoint_set(
+@_exclusive
+def tool_breakpoint_set(
     address: Annotated[Optional[int | str], "Breakpoint address (integer or hex string)"] = None,
     symbol: Annotated[Optional[str], "Function/symbol name (requires ELF attached)"] = None,
     bp_type: Annotated[str, "Breakpoint type: 'hw' (hardware, default), 'sw' (software), or 'auto'"] = "hw",
@@ -528,7 +599,8 @@ async def tool_breakpoint_set(
     name="pyocd_breakpoint_clear",
     description="Remove a breakpoint at an address or symbol.",
 )
-async def tool_breakpoint_clear(
+@_exclusive
+def tool_breakpoint_clear(
     address: Annotated[Optional[int | str], "Breakpoint address (integer or hex string)"] = None,
     symbol: Annotated[Optional[str], "Symbol name"] = None,
 ) -> str:
@@ -544,7 +616,8 @@ async def tool_breakpoint_clear(
     name="pyocd_breakpoint_clear_all",
     description="Remove all active breakpoints.",
 )
-async def tool_breakpoint_clear_all() -> str:
+@_exclusive
+def tool_breakpoint_clear_all() -> str:
     try:
         return _json(bp_tools.clear_all_breakpoints())
     except Exception as e:
@@ -555,7 +628,7 @@ async def tool_breakpoint_clear_all() -> str:
     name="pyocd_breakpoint_list",
     description="List all active breakpoints.",
 )
-async def tool_breakpoint_list() -> str:
+def tool_breakpoint_list() -> str:
     try:
         return _json(bp_tools.list_breakpoints())
     except Exception as e:
@@ -572,7 +645,7 @@ async def tool_breakpoint_list() -> str:
         "Note: For flashing, prefer .hex format over .elf for armclang compatibility."
     ),
 )
-async def tool_elf_attach(
+def tool_elf_attach(
     elf_path: Annotated[str, "Absolute path to the ELF file"],
 ) -> str:
     try:
@@ -585,7 +658,7 @@ async def tool_elf_attach(
     name="pyocd_elf_symbols",
     description="List symbols (functions/variables) from the attached ELF file.",
 )
-async def tool_elf_symbols(
+def tool_elf_symbols(
     filter_text: Annotated[str, "Filter symbols by name (case-insensitive)"] = "",
     limit: Annotated[int, "Maximum results (default 50)"] = 50,
 ) -> str:
@@ -599,7 +672,7 @@ async def tool_elf_symbols(
     name="pyocd_elf_lookup",
     description="Look up a symbol's address by name.",
 )
-async def tool_elf_lookup(
+def tool_elf_lookup(
     name: Annotated[str, "Symbol/function name to look up"],
 ) -> str:
     try:
@@ -612,7 +685,7 @@ async def tool_elf_lookup(
     name="pyocd_elf_info",
     description="Get information about the attached ELF file (arch, entry point, sections).",
 )
-async def tool_elf_info() -> str:
+def tool_elf_info() -> str:
     try:
         return _json(elf.get_elf_info())
     except Exception as e:
@@ -627,7 +700,7 @@ async def tool_elf_info() -> str:
         "Returns function name + offset (e.g. 'main+0x1A')."
     ),
 )
-async def tool_elf_address_to_symbol(
+def tool_elf_address_to_symbol(
     address: Annotated[int | str, "Memory address to resolve (e.g. from PC, LR, or stack trace)"],
 ) -> str:
     try:
@@ -646,7 +719,7 @@ async def tool_elf_address_to_symbol(
         "SVD files describe the register layout of MCU peripherals (GPIO, UART, SPI, etc)."
     ),
 )
-async def tool_svd_attach(
+def tool_svd_attach(
     svd_path: Annotated[str, "Absolute path to the SVD file"],
 ) -> str:
     try:
@@ -659,7 +732,7 @@ async def tool_svd_attach(
     name="pyocd_svd_list_peripherals",
     description="List all peripherals defined in the attached SVD file.",
 )
-async def tool_svd_list_peripherals() -> str:
+def tool_svd_list_peripherals() -> str:
     try:
         return _json(svd.list_peripherals())
     except Exception as e:
@@ -670,7 +743,7 @@ async def tool_svd_list_peripherals() -> str:
     name="pyocd_svd_list_registers",
     description="List all registers of a specific peripheral.",
 )
-async def tool_svd_list_registers(
+def tool_svd_list_registers(
     peripheral: Annotated[str, "Peripheral name (e.g. 'GPIOA', 'USART1', 'SPI1')"],
 ) -> str:
     try:
@@ -686,7 +759,8 @@ async def tool_svd_list_registers(
         "Example: pyocd.svd.read('GPIOA', 'IDR') to read GPIO input data register."
     ),
 )
-async def tool_svd_read(
+@_exclusive
+def tool_svd_read(
     peripheral: Annotated[str, "Peripheral name (e.g. 'GPIOA')"],
     register: Annotated[str, "Register name (e.g. 'IDR', 'ODR', 'CR1')"],
 ) -> str:
@@ -700,7 +774,8 @@ async def tool_svd_read(
     name="pyocd_svd_write",
     description="Write a value to a peripheral register by name.",
 )
-async def tool_svd_write(
+@_exclusive
+def tool_svd_write(
     peripheral: Annotated[str, "Peripheral name"],
     register: Annotated[str, "Register name"],
     value: Annotated[int, "Value to write (integer)"],
@@ -715,7 +790,7 @@ async def tool_svd_write(
     name="pyocd_svd_list_fields",
     description="List all bit fields of a peripheral register, showing name, bit range, width, and description.",
 )
-async def tool_svd_list_fields(
+def tool_svd_list_fields(
     peripheral: Annotated[str, "Peripheral name"],
     register: Annotated[str, "Register name"],
 ) -> str:
@@ -733,7 +808,8 @@ async def tool_svd_list_fields(
         "Example: set_field('GPIOA', 'MODER', 'MODER0', 1) sets pin 0 to output mode."
     ),
 )
-async def tool_svd_set_field(
+@_exclusive
+def tool_svd_set_field(
     peripheral: Annotated[str, "Peripheral name"],
     register: Annotated[str, "Register name"],
     field: Annotated[str, "Bit field name within the register"],
@@ -754,7 +830,8 @@ async def tool_svd_set_field(
         "Example: update_fields('GPIOA', 'MODER', {'MODER0': 1, 'MODER1': 2})"
     ),
 )
-async def tool_svd_update_fields(
+@_exclusive
+def tool_svd_update_fields(
     peripheral: Annotated[str, "Peripheral name"],
     register: Annotated[str, "Register name"],
     fields: Annotated[dict[str, int | str], "Map of field names to values (integer or enum name)"],
@@ -773,7 +850,7 @@ async def tool_svd_update_fields(
         "With register_name, shows all fields with bit ranges, descriptions, and enumerated values."
     ),
 )
-async def tool_svd_describe(
+def tool_svd_describe(
     peripheral: Annotated[str, "Peripheral name (e.g. 'GPIOA', 'USART1')"],
     register: Annotated[Optional[str], "Register name (omit for peripheral overview)"] = None,
 ) -> str:
@@ -794,7 +871,8 @@ async def tool_svd_describe(
         "Cortex-M4 typically has 4 DWT comparators available."
     ),
 )
-async def tool_watchpoint_set(
+@_exclusive
+def tool_watchpoint_set(
     address: Annotated[int | str, "Memory address to watch (integer or hex string)"],
     size: Annotated[int, "Watched region size: 1, 2, or 4 bytes"] = 4,
     access_type: Annotated[str, "'write' (default), 'read', or 'read_write'"] = "write",
@@ -810,7 +888,8 @@ async def tool_watchpoint_set(
     name="pyocd_watchpoint_clear",
     description="Remove a watchpoint at the given address.",
 )
-async def tool_watchpoint_clear(
+@_exclusive
+def tool_watchpoint_clear(
     address: Annotated[int | str, "Watchpoint address to clear (integer or hex string)"],
 ) -> str:
     try:
@@ -824,7 +903,8 @@ async def tool_watchpoint_clear(
     name="pyocd_watchpoint_clear_all",
     description="Remove all active watchpoints.",
 )
-async def tool_watchpoint_clear_all() -> str:
+@_exclusive
+def tool_watchpoint_clear_all() -> str:
     try:
         return _json(wp_tools.clear_all_watchpoints())
     except Exception as e:
@@ -835,7 +915,7 @@ async def tool_watchpoint_clear_all() -> str:
     name="pyocd_watchpoint_list",
     description="List all active watchpoints.",
 )
-async def tool_watchpoint_list() -> str:
+def tool_watchpoint_list() -> str:
     try:
         return _json(wp_tools.list_watchpoints())
     except Exception as e:
@@ -875,12 +955,12 @@ async def tool_target_wait_halt(
             logger.warning("[wait_halt] %s", user_hint)
 
         if resume_first:
-            state = await asyncio.to_thread(_target.get_state)
+            state = await _probe_call(_target.get_state)
             if state == Target.State.HALTED:
                 # Skip past breakpoint at current PC to avoid immediate re-trigger
                 from .tools.target import _skip_breakpoint_at_pc
-                await asyncio.to_thread(_skip_breakpoint_at_pc, _target)
-                await asyncio.to_thread(_target.resume)
+                await _probe_call(_skip_breakpoint_at_pc, _target)
+                await _probe_call(_target.resume)
 
         start = time.monotonic()
         poll_interval = 0.05  # 50ms
@@ -888,14 +968,14 @@ async def tool_target_wait_halt(
         total_polls = max(1, int(timeout / poll_interval))
 
         while True:
-            state = await asyncio.to_thread(_target.get_state)
+            state = await _probe_call(_target.get_state)
 
             # ── LOCKUP detection (double fault / unrecoverable) ──
             if state == Target.State.LOCKUP:
                 elapsed = time.monotonic() - start
                 # Halt CPU to exit lockup and allow register reads
                 try:
-                    await asyncio.to_thread(_target.halt)
+                    await _probe_call(_target.halt)
                 except Exception:
                     pass
                 result = {
@@ -909,9 +989,9 @@ async def tool_target_wait_halt(
                     ),
                 }
                 try:
-                    pc = await asyncio.to_thread(_target.read_core_register, "pc")
-                    lr = await asyncio.to_thread(_target.read_core_register, "lr")
-                    sp = await asyncio.to_thread(_target.read_core_register, "sp")
+                    pc = await _probe_call(_target.read_core_register, "pc")
+                    lr = await _probe_call(_target.read_core_register, "lr")
+                    sp = await _probe_call(_target.read_core_register, "sp")
                     result["pc"] = f"0x{pc:08X}"
                     result["lr"] = f"0x{lr:08X}"
                     result["sp"] = f"0x{sp:08X}"
@@ -928,7 +1008,7 @@ async def tool_target_wait_halt(
                     pass
                 # Try backtrace
                 try:
-                    bt = await asyncio.to_thread(debug_tools.compact_backtrace, 4)
+                    bt = await _probe_call(debug_tools.compact_backtrace, 4)
                     if bt:
                         result["backtrace"] = bt
                 except Exception:
@@ -937,9 +1017,9 @@ async def tool_target_wait_halt(
 
             # ── Normal HALTED detection ──
             if state == Target.State.HALTED:
-                pc = await asyncio.to_thread(_target.read_core_register, "pc")
-                lr = await asyncio.to_thread(_target.read_core_register, "lr")
-                sp = await asyncio.to_thread(_target.read_core_register, "sp")
+                pc = await _probe_call(_target.read_core_register, "pc")
+                lr = await _probe_call(_target.read_core_register, "lr")
+                sp = await _probe_call(_target.read_core_register, "sp")
                 elapsed = time.monotonic() - start
 
                 result = {
@@ -953,7 +1033,7 @@ async def tool_target_wait_halt(
 
                 # Identify halt reason from DFSR
                 try:
-                    dfsr = await asyncio.to_thread(_target.read32, SCB_DFSR)
+                    dfsr = await _probe_call(_target.read32, SCB_DFSR)
                     if dfsr & (1 << 0):
                         result["halt_reason"] = "HALTED (debug request)"
                     elif dfsr & (1 << 1):
@@ -964,7 +1044,7 @@ async def tool_target_wait_halt(
                         result["halt_reason"] = "VCATCH (vector catch)"
                     elif dfsr & (1 << 4):
                         result["halt_reason"] = "EXTERNAL"
-                    await asyncio.to_thread(_target.write32, SCB_DFSR, dfsr)
+                    await _probe_call(_target.write32, SCB_DFSR, dfsr)
                 except Exception:
                     pass
 
@@ -981,7 +1061,7 @@ async def tool_target_wait_halt(
 
                 # Auto-include compact backtrace (top 4 frames)
                 try:
-                    bt = await asyncio.to_thread(debug_tools.compact_backtrace, 4)
+                    bt = await _probe_call(debug_tools.compact_backtrace, 4)
                     if bt:
                         result["backtrace"] = bt
                 except Exception:
@@ -1025,7 +1105,8 @@ async def tool_target_wait_halt(
         "for FPU/MSP/PSP context. Call this when target is halted in a fault handler."
     ),
 )
-async def tool_debug_fault_analyze() -> str:
+@_exclusive
+def tool_debug_fault_analyze() -> str:
     try:
         result = debug_tools.fault_analyze()
         # Auto-include backtrace for crash analysis
@@ -1049,7 +1130,8 @@ async def tool_debug_fault_analyze() -> str:
         "and watermark integrity."
     ),
 )
-async def tool_debug_stack_overflow_check(
+@_exclusive
+def tool_debug_stack_overflow_check(
     tcb_address: Annotated[Optional[int | str], "Thread Control Block address (from .map file or symbol)"] = None,
     stack_addr_offset: Annotated[int, "Offset of stack_addr in TCB (RT-Thread=0x24)"] = 0x24,
     stack_size_offset: Annotated[int, "Offset of stack_size in TCB (RT-Thread=0x28)"] = 0x28,
@@ -1096,11 +1178,11 @@ async def tool_debug_sample_variable(
         for i in range(count):
             try:
                 if halt_on_read:
-                    await asyncio.to_thread(_target.halt)
-                    value = await asyncio.to_thread(read_fn, address)
-                    await asyncio.to_thread(_target.resume)
+                    await _probe_call(_target.halt)
+                    value = await _probe_call(read_fn, address)
+                    await _probe_call(_target.resume)
                 else:
-                    value = await asyncio.to_thread(read_fn, address)
+                    value = await _probe_call(read_fn, address)
 
                 elapsed = round(time.monotonic() - start_time, 3)
                 samples.append({
@@ -1153,7 +1235,7 @@ async def tool_debug_sample_variable(
         "Use filter_text to search (e.g. 'hc32', 'stm32f4')."
     ),
 )
-async def tool_target_list_supported(
+def tool_target_list_supported(
     filter_text: Annotated[str, "Filter targets by name (case-insensitive)"] = "",
 ) -> str:
     try:
@@ -1222,12 +1304,12 @@ async def tool_read_symbol(
         _target = session_mgr.target
         if sym_size in (1, 2, 4):
             read_fn = {1: _target.read8, 2: _target.read16, 4: _target.read32}[sym_size]
-            value = await asyncio.to_thread(read_fn, addr)
+            value = await _probe_call(read_fn, addr)
             result["value"] = value
             result["hex"] = f"0x{value:0{sym_size * 2}X}"
         else:
             # Block read for larger types (structs, arrays)
-            data = await asyncio.to_thread(_target.read_memory_block8, addr, sym_size)
+            data = await _probe_call(_target.read_memory_block8, addr, sym_size)
             result["bytes"] = [int(b) for b in data]
             result["hex_dump"] = " ".join(f"{b:02X}" for b in data)
 
@@ -1261,11 +1343,11 @@ async def tool_target_step_out(
     try:
         _target = session_mgr.target
 
-        state = await asyncio.to_thread(_target.get_state)
+        state = await _probe_call(_target.get_state)
         if state != Target.State.HALTED:
             return _error("Target must be halted first.")
 
-        lr = await asyncio.to_thread(_target.read_core_register, "lr")
+        lr = await _probe_call(_target.read_core_register, "lr")
 
         # EXC_RETURN check: if LR is 0xFFFFFFxx, we're in an exception handler
         if (lr & 0xFFFFFF00) == 0xFFFFFF00:
@@ -1276,24 +1358,24 @@ async def tool_target_step_out(
 
         # Set temp breakpoint at return address (strip Thumb bit for display)
         bp_addr = lr & ~0x01
-        success = await asyncio.to_thread(_target.set_breakpoint, lr)
+        success = await _probe_call(_target.set_breakpoint, lr)
         if success is False:
             return _error(f"Failed to set temp breakpoint at 0x{bp_addr:08X}")
 
         try:
             # Resume and wait — skip past breakpoint at current PC first
             from .tools.target import _skip_breakpoint_at_pc
-            await asyncio.to_thread(_skip_breakpoint_at_pc, _target)
-            await asyncio.to_thread(_target.resume)
+            await _probe_call(_skip_breakpoint_at_pc, _target)
+            await _probe_call(_target.resume)
             start = time.monotonic()
             poll_interval = 0.05
 
             while True:
-                state = await asyncio.to_thread(_target.get_state)
+                state = await _probe_call(_target.get_state)
                 if state == Target.State.HALTED:
-                    pc = await asyncio.to_thread(_target.read_core_register, "pc")
-                    sp = await asyncio.to_thread(_target.read_core_register, "sp")
-                    new_lr = await asyncio.to_thread(_target.read_core_register, "lr")
+                    pc = await _probe_call(_target.read_core_register, "pc")
+                    sp = await _probe_call(_target.read_core_register, "sp")
+                    new_lr = await _probe_call(_target.read_core_register, "lr")
                     elapsed = time.monotonic() - start
 
                     result = {
@@ -1322,8 +1404,8 @@ async def tool_target_step_out(
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:
                     # Timeout — halt and report
-                    await asyncio.to_thread(_target.halt)
-                    pc = await asyncio.to_thread(_target.read_core_register, "pc")
+                    await _probe_call(_target.halt)
+                    pc = await _probe_call(_target.read_core_register, "pc")
                     return _json({
                         "status": "timeout",
                         "elapsed_seconds": round(elapsed, 3),
@@ -1335,7 +1417,7 @@ async def tool_target_step_out(
         finally:
             # Always clean up temp breakpoint
             try:
-                await asyncio.to_thread(_target.remove_breakpoint, lr)
+                await _probe_call(_target.remove_breakpoint, lr)
             except Exception:
                 pass
 
@@ -1362,7 +1444,7 @@ async def tool_debug_backtrace(
     max_frames: Annotated[int, "Maximum frames to return (default 16)"] = 16,
 ) -> str:
     try:
-        return _json(await asyncio.to_thread(
+        return _json(await _probe_call(
             debug_tools.backtrace,
             scan_depth=scan_depth,
             max_frames=max_frames,
@@ -1381,7 +1463,8 @@ async def tool_debug_backtrace(
         "Returns up/down channel names and sizes. Target must be halted or have RTT initialized."
     ),
 )
-async def tool_rtt_start(
+@_exclusive
+def tool_rtt_start(
     address: Annotated[Optional[int | str], "RTT control block address (omit to auto-search)"] = None,
     size: Annotated[Optional[int], "Search size in bytes (default: auto)"] = None,
     control_block_id: Annotated[str, "RTT control block ID string"] = "SEGGER RTT",
@@ -1397,7 +1480,8 @@ async def tool_rtt_start(
     name="pyocd_rtt_stop",
     description="Stop RTT and release resources.",
 )
-async def tool_rtt_stop() -> str:
+@_exclusive
+def tool_rtt_stop() -> str:
     try:
         return _json(rtt_tools.stop())
     except Exception as e:
@@ -1411,7 +1495,8 @@ async def tool_rtt_stop() -> str:
         "Non-blocking: returns empty if no data available."
     ),
 )
-async def tool_rtt_read(
+@_exclusive
+def tool_rtt_read(
     channel: Annotated[int, "Up channel index (default 0)"] = 0,
     max_bytes: Annotated[int, "Maximum bytes to read (default 1024)"] = 1024,
     encoding: Annotated[str, "Text encoding (default 'utf-8')"] = "utf-8",
@@ -1429,7 +1514,8 @@ async def tool_rtt_read(
         "The data string is encoded before sending. Returns bytes written."
     ),
 )
-async def tool_rtt_write(
+@_exclusive
+def tool_rtt_write(
     data: Annotated[str, "Text data to send"],
     channel: Annotated[int, "Down channel index (default 0)"] = 0,
     encoding: Annotated[str, "Text encoding (default 'utf-8')"] = "utf-8",
@@ -1444,7 +1530,8 @@ async def tool_rtt_write(
     name="pyocd_rtt_status",
     description="Get RTT status: running/stopped, channel info, bytes available.",
 )
-async def tool_rtt_status() -> str:
+@_exclusive
+def tool_rtt_status() -> str:
     try:
         return _json(rtt_tools.status())
     except Exception as e:
@@ -1463,7 +1550,7 @@ async def tool_rtt_status() -> str:
         "Returns target type, firmware path, ELF path, SVD path, and probe ID."
     ),
 )
-async def pyocd_project_load(
+def pyocd_project_load(
     project_dir: Annotated[str, "Absolute path to the project root directory"],
 ) -> str:
     try:
@@ -1481,7 +1568,7 @@ async def pyocd_project_load(
         "Paths under the project directory are automatically converted to relative paths."
     ),
 )
-async def pyocd_project_init(
+def pyocd_project_init(
     project_dir: Annotated[str, "Absolute path to the project root directory"],
     target: Annotated[str, "Target MCU type (e.g. 'hc32f4a0xi', 'stm32f407xe')"],
     firmware: Annotated[Optional[str], "Path to firmware file (.hex/.bin)"] = None,
@@ -1507,7 +1594,7 @@ async def pyocd_project_init(
         "vendor SVD is available. Extracts the SVD to a temp directory and attaches it."
     ),
 )
-async def pyocd_svd_attach_builtin(
+def pyocd_svd_attach_builtin(
     svd_name: Annotated[str, "Built-in SVD filename (e.g. 'HC32F4A0.svd', 'STM32F429x.svd'). Use pyocd_project_load to discover available names."],
     target_type: Annotated[Optional[str], "Target type to auto-match SVD name (alternative to svd_name)"] = None,
 ) -> str:

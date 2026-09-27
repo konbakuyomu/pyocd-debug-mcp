@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "pyocd>=0.36",
-    "fastmcp>=2.3.0",
+    "fastmcp>=3.0",  # runs plain-function tools in worker threads (see server.py "Probe access")
     "mcp[cli]>=1.21.0",
     "pyelftools>=0.29",
     "pydantic>=2.0.0",
